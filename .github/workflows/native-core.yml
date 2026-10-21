@@ -1,0 +1,28 @@
+name: Native macOS XLibre core
+on: [push, pull_request]
+permissions:
+  contents: read
+jobs:
+  macos-core:
+    runs-on: macos-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Install native core dependencies
+        run: brew install meson ninja pkgconf pixman libxfont2 libxkbfile xorgproto xtrans xkbcomp xkeyboard-config
+      - name: Build XLibre DDX
+        run: bash scripts/build-xlibre.sh
+      - name: Exercise real X11 rendering, input, clipboard and window management
+        run: |
+          export WAYX_TEST_CORE="$(cat build/xlibre/wayx-core-path.txt)"
+          cargo test --locked --test xlibre --test rootless --test window_manager -- --ignored --nocapture
+      - name: Exercise native AppKit window and Metal presentation
+        run: |
+          cargo build --locked
+          target/debug/wayx serve --core "$(cat build/xlibre/wayx-core-path.txt)" --frames 3 -- :196 -screen 0 640x480x24 -crtcs 1@640x480 -nolisten tcp -ac
+      - uses: actions/upload-artifact@v4
+        with:
+          name: macos-core
+          path: build/xlibre/hw/wayx/*.dylib

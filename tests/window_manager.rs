@@ -53,7 +53,11 @@ fn window_management_should_route_requests_hints_states_and_cooperative_close() 
             "640x480x24",
             "-crtcs",
             "1@640x480",
-            "-nolisten",
+            if cfg!(windows) {
+                "-listen"
+            } else {
+                "-nolisten"
+            },
             "tcp",
             "-ac",
         ]
@@ -71,14 +75,32 @@ fn window_management_should_route_requests_hints_states_and_cooperative_close() 
             ensure!(Instant::now() < deadline, "Server did not start");
             std::thread::sleep(Duration::from_millis(5));
         }
-        let mut wm = SelectionBridge::connect(":195", backend.clone())?;
+        let mut wm = SelectionBridge::connect(
+            if cfg!(windows) {
+                "127.0.0.1:195"
+            } else {
+                ":195"
+            },
+            backend.clone(),
+        )?;
         wm.enable_window_management()?;
-        let mut competitor = SelectionBridge::connect(":195", backend.clone())?;
+        let mut competitor = SelectionBridge::connect(
+            if cfg!(windows) {
+                "127.0.0.1:195"
+            } else {
+                ":195"
+            },
+            backend.clone(),
+        )?;
         ensure!(
             competitor.enable_window_management().is_err(),
             "Second manager acquired screen"
         );
-        let (conn, s) = x11rb::connect(Some(":195"))?;
+        let (conn, s) = x11rb::connect(Some(if cfg!(windows) {
+            "127.0.0.1:195"
+        } else {
+            ":195"
+        }))?;
         let root = conn.setup().roots[s].root;
         let atom = |name: &str| -> Result<u32> {
             Ok(conn.intern_atom(false, name.as_bytes())?.reply()?.atom)

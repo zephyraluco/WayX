@@ -51,7 +51,11 @@ fn xlibre_draw_and_input_roundtrip() -> Result<()> {
             "320x240x24",
             "-crtcs",
             "1@320x240",
-            "-nolisten",
+            if cfg!(windows) {
+                "-listen"
+            } else {
+                "-nolisten"
+            },
             "tcp",
             "-ac",
         ]
@@ -65,7 +69,12 @@ fn xlibre_draw_and_input_roundtrip() -> Result<()> {
     });
     let outcome = (|| -> Result<()> {
         wait_for(|| backend.lock().unwrap().windows.contains_key(&1))?;
-        let (conn, screen) = x11rb::connect(Some(&display))?;
+        let client_display = if cfg!(windows) {
+            format!("127.0.0.1{display}")
+        } else {
+            display.clone()
+        };
+        let (conn, screen) = x11rb::connect(Some(&client_display))?;
         let root = conn.setup().roots[screen].root;
         let win = conn.generate_id()?;
         conn.create_window(
@@ -168,7 +177,7 @@ fn xlibre_draw_and_input_roundtrip() -> Result<()> {
             "Expected X11 keycode 38 and button 1, got key={key}, button={button}"
         );
         #[cfg(feature = "desktop")]
-        selection_roundtrip(backend.clone(), &display)?;
+        selection_roundtrip(backend.clone(), &client_display)?;
         conn.destroy_window(win)?.check()?;
         Ok(())
     })();

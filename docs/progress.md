@@ -6,7 +6,7 @@
 | --- | --- | --- | --- |
 | 1 | Rootless 逐窗口映射 | 已实现，Linux 验证通过 | Composite 独立 Pixmap、完全遮挡下绘制、嵌套子窗口、输入路由、map/unmap/resize/destroy；实际两个原生窗口与独立关闭 |
 | 2 | 窗口管理 | Linux X11 已实现并验证；其他宿主平台待验收 | 双向移动/resize、焦点与层级、WM_DELETE_WINDOW、ICCCM 大小约束、瞬态/弹出窗口 |
-| 3 | Windows/macOS XLibre 核心 | 待实现 | 两个平台核心的真实编译、链接、打包和 GUI/协议验证；不以 Rust 静态检查代替 |
+| 3 | Windows/macOS XLibre 核心 | 进行中：macOS 原生 CI；Windows 依赖移植待完成 | 两个平台核心的真实编译、链接、打包和 GUI/协议验证；不以 Rust 静态检查代替 |
 | 4 | IME/XIM | 待实现 | 中日韩组合输入与文本提交到真实 X11 客户端 |
 | 5 | 平滑滚动 | 待实现 | 亚单位滚动累积、方向、横向滚动、输入顺序 |
 | 6 | 完整剪贴板 | 待实现 | 图片、文件列表、PRIMARY、持久化及已有文本/INCR 回归 |
@@ -28,3 +28,12 @@
 - 原生 X11 测试实际观察宿主窗口：两个独立窗口、双向移动/缩放、WM_TRANSIENT_FOR，以及应用收到关闭通知后自行销毁。
 - Rust fmt、Clippy、全特性测试、C ABI v2 布局/回调，以及原有 rootful/rootless 绘制输入和文本/INCR 回归通过。
 - C ABI v2 创建窗口先隐藏，插件需重建。Wayland 全局位置控制受协议限制；Wayland/macOS 原生瞬态关系不计为已完成，Windows/macOS 核心仍属第三项。
+
+
+## 第三项进展（未验收）
+
+- 构建脚本不再假定 `.so` 后缀，从 Meson 实际产物生成 `build/xlibre/wayx-core-path.txt`，支持 `.dylib`/`.dll` 的路径发现。
+- XKB 编译器及数据位置从原生 pkg-config 获取，可用 WAYX_XKB_BIN_DIR / WAYX_XKB_DIR 覆盖；输出到可写临时目录。
+- macOS 新增原生 XLibre 构建、真实 X11 协议测试、AppKit/Metal 呈现和动态库归档 CI，结果需实际运行确认。
+- Windows 测试连接调整为回环 TCP；仅 Rust desktop 跨目标静态检查通过，不代表 XLibre DLL 可用。MSYS2 包目录缺少原生 xfont2、libxkbfile、xkbcomp、xtrans 等必需依赖，仍需移植依赖或引入经过验证的 Windows X11 构建工具链。不能把不存在的软件包安装步骤当作 Windows 支持。
+- 第三项没有通过两个平台的核心/GUI 验收，因此尚未开始第四项 IME/XIM。

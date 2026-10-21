@@ -51,7 +51,11 @@ fn rootless_should_preserve_occluded_pixels_and_independent_windows() -> Result<
             "320x240x24",
             "-crtcs",
             "1@320x240",
-            "-nolisten",
+            if cfg!(windows) {
+                "-listen"
+            } else {
+                "-nolisten"
+            },
             "tcp",
             "-ac",
         ]
@@ -69,7 +73,11 @@ fn rootless_should_preserve_occluded_pixels_and_independent_windows() -> Result<
             !backend.lock().unwrap().windows[&1].mapped,
             "Root desktop must stay hidden"
         );
-        let (conn, s) = x11rb::connect(Some(":194"))?;
+        let (conn, s) = x11rb::connect(Some(if cfg!(windows) {
+            "127.0.0.1:194"
+        } else {
+            ":194"
+        }))?;
         let root = conn.setup().roots[s].root;
         let a = conn.generate_id()?;
         let b = conn.generate_id()?;
