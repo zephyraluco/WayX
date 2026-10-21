@@ -1,0 +1,35 @@
+name: WayX
+on: [push, pull_request]
+permissions:
+  contents: read
+jobs:
+  rust:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+      - if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y libx11-dev libxkbcommon-dev libwayland-dev
+      - run: cargo fmt --check
+      - run: cargo clippy --locked --all-targets --all-features -- -D warnings
+      - run: cargo test --locked --all-targets
+      - run: cargo test --locked --no-default-features --lib
+  xlibre:
+    runs-on: ubuntu-latest
+    container: debian:trixie
+    steps:
+      - run: apt-get update && apt-get install -y git ca-certificates curl build-essential pkg-config python3 meson ninja-build libx11-dev libxkbcommon-dev libwayland-dev libpixman-1-dev libxkbfile-dev libxfont-dev libmd-dev xtrans-dev x11proto-dev xkb-data x11-xkb-utils libvulkan1 mesa-vulkan-drivers xvfb
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - run: bash scripts/build-xlibre.sh
+      - run: cargo build --locked && bash scripts/test-c-bridge.sh
+      - run: WAYX_TEST_CORE=$PWD/build/xlibre/hw/wayx/libwayx-xserver.so cargo test --locked --test xlibre -- --ignored --nocapture
+      - run: mkdir -p /tmp/wayx-runtime && chmod 700 /tmp/wayx-runtime && XDG_RUNTIME_DIR=/tmp/wayx-runtime WGPU_BACKEND=vulkan cargo run --locked -- gpu-smoke
+      - run: python3 scripts/test-native.py --core build/xlibre/hw/wayx/libwayx-xserver.so

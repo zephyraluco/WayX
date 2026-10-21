@@ -1,0 +1,35 @@
+[package]
+name = "wayx"
+version = "0.1.0"
+edition = "2024"
+license = "MIT"
+description = "XLibre display backend using Rust, winit and wgpu"
+
+[lib]
+crate-type = ["rlib", "staticlib"]
+
+[features]
+default = ["desktop", "ssh"]
+desktop = ["dep:winit", "dep:wgpu", "dep:pollster", "dep:arboard", "dep:x11rb"]
+ssh = ["dep:russh", "dep:tokio", "dep:rand"]
+
+[dependencies]
+anyhow = "1"
+clap = { version = "4", features = ["derive"] }
+libloading = "0.8"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+winit = { version = "0.30", optional = true }
+wgpu = { version = "0.20", optional = true }
+pollster = { version = "0.3", optional = true }
+arboard = { version = "3", default-features = false, features = ["wayland-data-control"], optional = true }
+russh = { version = "0.64", default-features = false, features = ["ring", "rsa"], optional = true }
+tokio = { version = "1", features = ["rt-multi-thread", "net", "io-util", "sync", "time"], optional = true }
+rand = { version = "0.8", optional = true }
+
+x11rb = { version = "0.13", features = ["xfixes"], optional = true }
+
+[dev-dependencies]
+x11rb = { version = "0.13", features = ["xfixes"] }
+rand_10 = { package = "rand", version = "0.10" }
+tempfile = "3"

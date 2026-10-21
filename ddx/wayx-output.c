@@ -1,0 +1,147 @@
+/* SPDX-License-Identifier: MIT
+ * Rootful DDX based on XLibre's software framebuffer. No X11 protocol reimplementation.
+ * The included upstream file retains its original copyright and license. */
+#define InitOutput WayxVfbInitOutput
+#define ddxGiveUp WayxVfbGiveUp
+#include "../vfb/InitOutput.c"
+#undef InitOutput
+#undef ddxGiveUp
+#include "wayx.h"
+#include "dix/input_priv.h"
+#include "windowstr.h"
+#include "damage.h"
+#include "regionstr.h"
+#include "inputstr.h"
+#include "xkbsrv.h"
+
+void InitOutput(int argc,char **argv);
+void ddxGiveUp(enum ExitCode error);
+_X_EXPORT int wayx_xserver_run(const WayxApi*,WayxBackend*,int,char**);
+
+static const WayxApi *api;
+static WayxBackend *backend;
+static DamagePtr damage;
+static OsTimerPtr timer;
+static ScreenPtr screen;
+extern DeviceIntPtr wayx_pointer, wayx_keyboard;
+extern int dix_main(int, char **, char **);
+
+/* USB HID usage -> Linux evdev XKB keycode (+8). No enum/scancode casts. */
+static unsigned int keycode(unsigned int hid) {
+    static const unsigned char letter_evdev[26]={30,48,46,32,18,33,34,35,23,36,37,38,50,49,24,25,16,19,31,20,22,47,17,45,21,44};
+    if (hid>=4 && hid<=29) return letter_evdev[hid-4]+8;
+    if (hid>=30 && hid<=38) return hid-30+2+8;
+    if (hid==39) return 11+8;
+    if (hid>=58 && hid<=67) return hid-58+59+8;
+    switch (hid) {
+    case 40:return 28+8; case 41:return 1+8; case 42:return 14+8; case 43:return 15+8; case 44:return 57+8;
+    case 45:return 12+8; case 46:return 13+8; case 47:return 26+8; case 48:return 27+8; case 49:return 43+8;
+    case 51:return 39+8; case 52:return 40+8; case 53:return 41+8; case 54:return 51+8; case 55:return 52+8; case 56:return 53+8; case 57:return 58+8;
+    case 68:return 87+8; case 69:return 88+8; case 70:return 99+8; case 71:return 70+8; case 72:return 119+8;
+    case 73:return 110+8; case 74:return 102+8; case 75:return 104+8; case 76:return 111+8; case 77:return 107+8; case 78:return 109+8;
+    case 79:return 106+8; case 80:return 105+8; case 81:return 108+8; case 82:return 103+8;
+    case 83:return 69+8; case 84:return 98+8; case 85:return 55+8; case 86:return 74+8; case 87:return 78+8; case 88:return 96+8;
+    case 89:return 79+8; case 90:return 80+8; case 91:return 81+8; case 92:return 75+8; case 93:return 76+8; case 94:return 77+8;
+    case 95:return 71+8; case 96:return 72+8; case 97:return 73+8; case 98:return 82+8; case 99:return 83+8;
+    case 224:return 29+8;case 225:return 42+8;case 226:return 56+8;case 227:return 125+8;
+    case 228:return 97+8;case 229:return 54+8;case 230:return 100+8;case 231:return 126+8;
+    default:return 0;
+    }
+}
+static unsigned char keys_down[256];
+static unsigned char buttons_down[32];
+static void release_input(void) {
+    for (unsigned int i=8;i<256;i++) if (keys_down[i]) {QueueKeyboardEvents(wayx_keyboard,KeyRelease,i);keys_down[i]=0;}
+    ValuatorMask *mask=valuator_mask_new(0);
+    for (unsigned int i=1;i<32;i++) if (buttons_down[i]) {QueuePointerEvents(wayx_pointer,ButtonRelease,i,0,mask);buttons_down[i]=0;}
+    valuator_mask_free(&mask);
+}
+static void button(int which,int pressed) {
+    if (which<1 || which>13) return;
+    ValuatorMask *mask=valuator_mask_new(0);
+    QueuePointerEvents(wayx_pointer,pressed?ButtonPress:ButtonRelease,which,0,mask);
+    buttons_down[which]=pressed;
+    valuator_mask_free(&mask);
+}
+static CARD32 poll_backend(OsTimerPtr unused,CARD32 now,void *closure) {
+    WayxInputEvent event;
+    for (int count=0;count<4096 && api->input_poll(backend,&event)==1;count++) {
+        switch (event.kind) {
+        case WAYX_MOTION: {
+            ValuatorMask *mask=valuator_mask_new(2);
+            valuator_mask_set_double(mask,0,event.x);valuator_mask_set_double(mask,1,event.y);
+            QueuePointerEvents(wayx_pointer,MotionNotify,0,POINTER_ABSOLUTE|POINTER_SCREEN,mask);
+            valuator_mask_free(&mask);break;
+        }
+        case WAYX_BUTTON:button(event.detail,event.flags!=0);break;
+        case WAYX_KEY: {
+            unsigned int key=keycode(event.detail);
+            if (key) {QueueKeyboardEvents(wayx_keyboard,event.flags?KeyPress:KeyRelease,key);keys_down[key]=event.flags!=0;}
+            break;
+        }
+        case WAYX_SCROLL: {
+            int vertical=event.y>0?4:5,horizontal=event.x>0?7:6;
+            int ny=(int)fmin(fabs(event.y),32),nx=(int)fmin(fabs(event.x),32);
+            for(int i=0;i<ny;i++) {button(vertical,1);button(vertical,0);}
+            for(int i=0;i<nx;i++) {button(horizontal,1);button(horizontal,0);} break;
+        }
+        case WAYX_FOCUS:if (!event.flags) release_input();break;
+        case WAYX_CLOSE:case WAYX_SHUTDOWN:GiveUp(0);break;
+        /* RESIZE currently scales the fixed X screen. TEXT/CLIPBOARD are consumed
+         * by the selection/XIM layer, not synthesized into raw X keycodes. */
+        default:break;
+        }
+    }
+    if (damage && !RegionNil(DamageRegion(damage))) {
+        RegionPtr region=DamageRegion(damage);
+        BoxPtr boxes=RegionRects(region);
+        vfbScreenInfoPtr fb=vfbGetScreenPriv(screen);
+        for (int i=0;i<RegionNumRects(region);i++) {
+            BoxRec b=boxes[i];
+            if (b.x1<0) b.x1=0;
+            if (b.y1<0) b.y1=0;
+            if (b.x2>screen->width) b.x2=screen->width;
+            if (b.y2>screen->height) b.y2=screen->height;
+            if (b.x2<=b.x1 || b.y2<=b.y1) continue;
+            size_t stride=fb->paddedBytesWidth;
+            size_t len=(b.y2-b.y1-1)*stride+(b.x2-b.x1)*4;
+            const uint8_t *pixels=(const uint8_t*)fb->pfbMemory+b.y1*stride+b.x1*4;
+            if (api->frame_damage(backend,1,b.x1,b.y1,b.x2-b.x1,b.y2-b.y1,stride,pixels,len)<0)
+                FatalError("WayX framebuffer rejected damage\n");
+        }
+        DamageEmpty(damage);
+    }
+    return 8;
+}
+static void attach_screen(CallbackListPtr *list,void *closure,void *data) {
+    screen=data;
+    vfbScreenInfoPtr fb=vfbGetScreenPriv(screen);
+    if (screen->myNum!=0 || fb->bitsPerPixel!=32 || fb->depth!=24)
+        FatalError("WayX currently requires one depth-24, 32-bpp screen\n");
+    if (api->window_create(backend,1,0,screen->width,screen->height)<0)
+        FatalError("WayX failed to create root display\n");
+    const char title[]="WayX — XLibre desktop";
+    api->window_title(backend,1,(const uint8_t*)title,sizeof(title)-1);
+    damage=DamageCreate(NULL,NULL,DamageReportNone,TRUE,screen,NULL);
+    if (!damage) FatalError("WayX could not create Damage tracking\n");
+    DamageRegister(&screen->GetScreenPixmap(screen)->drawable,damage);
+    api->frame_damage(backend,1,0,0,screen->width,screen->height,fb->paddedBytesWidth,(const uint8_t*)fb->pfbMemory,(size_t)fb->paddedBytesWidth*screen->height);
+    timer=TimerSet(NULL,0,8,poll_backend,NULL);
+}
+void InitOutput(int argc,char **argv) {
+    WayxVfbInitOutput(argc,argv);
+    if (vfbNumScreens!=1) FatalError("WayX currently supports one X screen\n");
+    if (!AddCallback(&PostInitRootWindowCallback,attach_screen,NULL)) FatalError("WayX failed to register screen callback\n");
+}
+void ddxGiveUp(enum ExitCode error) {
+    if (timer) {TimerFree(timer);timer=NULL;}
+    damage=NULL;
+    if (backend) api->window_destroy(backend,1);
+    WayxVfbGiveUp(error);
+}
+_X_EXPORT int wayx_xserver_run(const WayxApi *callbacks,WayxBackend *handle,int argc,char **argv) {
+    if (!callbacks || callbacks->abi_version!=WAYX_ABI_VERSION || callbacks->struct_size<sizeof(WayxApi) || !handle) return 2;
+    api=callbacks;backend=handle;
+    char *env[]={NULL};
+    return dix_main(argc,argv,env);
+}

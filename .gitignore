@@ -1,0 +1,6 @@
+/target/
+/build/
+/.cache/
+*.log
+/.agents/
+/AGENTS.md

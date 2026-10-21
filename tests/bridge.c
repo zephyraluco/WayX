@@ -1,0 +1,26 @@
+#include "wayx.h"
+#include <assert.h>
+#include <string.h>
+int main(void) {
+    const WayxApi *api=wayx_get_api();
+    assert(api->abi_version==WAYX_ABI_VERSION);
+    assert(api->struct_size==sizeof(*api));
+    assert(sizeof(WayxInputEvent)==64);
+    WayxBackend *b=wayx_backend_new();
+    assert(api->window_create(b,1,0,4,3)==0);
+    assert(api->window_create(b,1,0,4,3)<0);
+    uint8_t pixels[16]={0,0,255,0, 0,255,0,0, 255,0,0,0, 255,255,255,0};
+    assert(api->frame_damage(b,1,1,1,2,2,8,pixels,sizeof pixels)==0);
+    assert(api->frame_damage(b,1,3,2,2,2,8,pixels,sizeof pixels)<0);
+    assert(api->clipboard_set(b,(const uint8_t*)"hello",5)==0);
+    size_t n=0;
+    assert(api->clipboard_get(b,NULL,0,&n)==0 && n==5);
+    uint8_t text[5];
+    assert(api->clipboard_get(b,text,sizeof text,&n)==0);
+    assert(memcmp(text,"hello",5)==0);
+    WayxInputEvent event;
+    assert(api->input_poll(b,&event)==0);
+    assert(api->window_destroy(b,1)==0);
+    wayx_backend_free(b);
+    return 0;
+}
