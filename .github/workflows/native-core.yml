@@ -20,17 +20,19 @@ jobs:
           cargo test --locked --test xlibre --test rootless --test window_manager -- --ignored --nocapture
       - name: Exercise native AppKit window and Metal presentation
         run: |
-          cargo build --locked
-          target/debug/wayx serve --core "$(cat build/xlibre/wayx-core-path.txt)" --frames 3 -- :196 -screen 0 640x480x24 -crtcs 1@640x480 -nolisten tcp -ac
+          cargo build --locked --release
+          target/release/wayx serve --core "$(cat build/xlibre/wayx-core-path.txt)" --frames 3 -- :196 -screen 0 640x480x24 -crtcs 1@640x480 -nolisten tcp -ac
       - name: Stage and exercise relocated core runtime
         run: |
-          python3 scripts/bundle-core.py --core "$(cat build/xlibre/wayx-core-path.txt)" --client target/debug/wayx --compiler "$(command -v xkbcomp)" --xkb-dir "$(pkg-config --variable=xkbconfigdir xkbcomp)" --license-dir build/xlibre-source --output build/core-runtime
+          python3 scripts/bundle-core.py --core "$(cat build/xlibre/wayx-core-path.txt)" --client target/release/wayx --compiler "$(command -v xkbcomp)" --xkb-dir "$(pkg-config --variable=xkbconfigdir xkbcomp)" --license-dir build/xlibre-source --output build/core-runtime
           mv build/core-runtime build/relocated-runtime
           build/relocated-runtime/wayx.sh --frames 3 -- :196 -screen 0 640x480x24 -crtcs 1@640x480 -nolisten tcp -ac
+      - name: Archive runtime preserving executable permissions
+        run: tar -czf build/macos-core-runtime.tar.gz -C build relocated-runtime
       - uses: actions/upload-artifact@v4
         with:
           name: macos-core-runtime-${{ github.sha }}
-          path: build/relocated-runtime
+          path: build/macos-core-runtime.tar.gz
           if-no-files-found: error
           retention-days: 7
   windows-core:
@@ -71,6 +73,7 @@ jobs:
           path: build/vcpkg-binary-cache
           key: ${{ steps.native-dependency-cache.outputs.cache-primary-key }}
       - uses: msys2/setup-msys2@v2
+        id: msys2
         with:
           msystem: UCRT64
           update: true
@@ -90,22 +93,26 @@ jobs:
           export WAYX_WINDOWS_DEPS="$GITHUB_WORKSPACE/build/windows-installed/x64-windows"
           bash scripts/build-windows-core.sh
       - name: Exercise protocol and actual Win32 presentation
+        env:
+          WAYX_MSYS2_ROOT: ${{ steps.msys2.outputs.msys2-location }}
         shell: pwsh
         run: |
-          $env:PATH = "$pwd/build/windows-native/bin;$pwd/build/windows-installed/x64-windows/bin;C:/msys64/ucrt64/bin;" + $env:PATH
+          $env:PATH = "$pwd/build/windows-native/bin;$pwd/build/windows-installed/x64-windows/bin;$env:WAYX_MSYS2_ROOT/ucrt64/bin;" + $env:PATH
           $env:WAYX_TEST_CORE = (Get-Content build/xlibre/wayx-core-path.txt).Trim()
           cargo test --locked --test xlibre --test rootless --test window_manager -- --ignored --nocapture
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          cargo build --locked
+          cargo build --locked --release
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          target/debug/wayx.exe serve --core $env:WAYX_TEST_CORE --frames 3 -- :196 -screen 0 640x480x24 -crtcs 1@640x480 -listen tcp -ac
+          target/release/wayx.exe serve --core $env:WAYX_TEST_CORE --frames 3 -- :196 -screen 0 640x480x24 -crtcs 1@640x480 -listen tcp -ac
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - name: Stage and exercise relocated core runtime
+        env:
+          WAYX_MSYS2_ROOT: ${{ steps.msys2.outputs.msys2-location }}
         shell: pwsh
         run: |
-          $env:PATH = "C:/msys64/ucrt64/bin;" + $env:PATH
+          $env:PATH = "$env:WAYX_MSYS2_ROOT/ucrt64/bin;" + $env:PATH
           $core = (Get-Content build/xlibre/wayx-core-path.txt).Trim()
-          python scripts/bundle-core.py --core $core --client target/debug/wayx.exe --compiler build/windows-native/bin/xkbcomp.exe --xkb-dir build/windows-native/share/xkeyboard-config-2 --search-dir build/windows-installed/x64-windows/bin --search-dir C:/msys64/ucrt64/bin --license-dir build/xlibre-source --license-dir build/windows-installed/x64-windows/share --license-dir build/native-sources --output build/core-runtime
+          python scripts/bundle-core.py --core $core --client target/release/wayx.exe --compiler build/windows-native/bin/xkbcomp.exe --xkb-dir build/windows-native/share/xkeyboard-config-2 --search-dir build/windows-installed/x64-windows/bin --search-dir $env:WAYX_MSYS2_ROOT/ucrt64/bin --license-dir build/xlibre-source --license-dir build/windows-installed/x64-windows/share --license-dir build/native-sources --output build/core-runtime
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           Move-Item build/core-runtime build/relocated-runtime
           Move-Item build/windows-installed build/windows-installed-disabled

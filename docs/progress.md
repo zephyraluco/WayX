@@ -48,3 +48,7 @@ Windows 常规 CI 暴露 SSH 关闭的 TCP reset；已等待 russh 传输任务�
 - CI 下载策略：每次推送均运行三平台客户端及原生核心工作流，不再取消旧提交的
   构建或按文件路径跳过核心构建。release 客户端、Linux 核心以及验证通过的
   macOS/Windows 运行包按提交 SHA 命名，上传后保留 7 天。失败任务不发布产物。
+- macOS 搬移后的核心运行包已在 run 39620591975 验证通过。Windows xkbcomp
+  编译失败定位为 Windows `ERROR` 常量覆盖诊断宏，已针对固定源包修正；完整
+  Windows 验收仍待后续 CI。原生运行包客户端改用 release 构建，macOS 包使用
+  tar.gz 保留可执行权限；Windows 使用 MSYS2 action 输出的实际路径寻找依赖。
