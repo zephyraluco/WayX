@@ -40,6 +40,18 @@ if new not in text:
 PY_PROTOCOLS
 build_dependency protocols "$protocols" -Dlegacy=true
 compiler="$(fetch https://www.x.org/releases/individual/app/xkbcomp-1.5.0.tar.xz 2ac31f26600776db6d9cd79b3fcd272263faebac7eb85fb2f33c7141b8486060 xkbcomp-1.5.0)"
+# Xwindows.h overwrites utils.h's ERROR alias with the Win32 numeric constant.
+# Call the existing diagnostic function directly in the affected translation unit.
+python3 - "$compiler/listing.c" <<'PY_XKBCOMP'
+from pathlib import Path
+import sys
+path = Path(sys.argv[1])
+text = path.read_text()
+if 'ERROR(' in text:
+    if text.count('ERROR(') != 4:
+        raise SystemExit('Unexpected pinned xkbcomp diagnostic calls')
+    path.write_text(text.replace('ERROR(', 'uError('))
+PY_XKBCOMP
 build_dependency xkbcomp "$compiler"
 data="$(fetch https://xorg.freedesktop.org/archive/individual/data/xkeyboard-config/xkeyboard-config-2.48.tar.xz b77041324f0109f77161ee43743fe04baa485866af8460d31e476ad3f7648fd5 xkeyboard-config-2.48)"
 build_dependency xkbdata "$data" -Dnls=false
