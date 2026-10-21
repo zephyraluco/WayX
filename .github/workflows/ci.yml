@@ -25,11 +25,30 @@ jobs:
     runs-on: ubuntu-latest
     container: debian:trixie
     steps:
-      - run: apt-get update && apt-get install -y git ca-certificates curl build-essential pkg-config python3 meson ninja-build libx11-dev libxkbcommon-dev libwayland-dev libpixman-1-dev libxkbfile-dev libxfont-dev libmd-dev xtrans-dev x11proto-dev xkb-data x11-xkb-utils libvulkan1 mesa-vulkan-drivers xvfb
+      - name: Install XLibre build and native X11 runtime dependencies
+        run: |
+          apt-get update
+          apt-get install -y git ca-certificates curl build-essential pkg-config \
+            python3 meson ninja-build libx11-dev libxkbcommon-dev libwayland-dev \
+            libpixman-1-dev libxkbfile-dev libxfont-dev libmd-dev xtrans-dev \
+            x11proto-dev xkb-data x11-xkb-utils libvulkan1 mesa-vulkan-drivers xvfb \
+            libxcursor1 libx11-xcb1 libxi6 libxkbcommon-x11-0
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
       - run: bash scripts/build-xlibre.sh
       - run: cargo build --locked && bash scripts/test-c-bridge.sh
       - run: WAYX_TEST_CORE=$PWD/build/xlibre/hw/wayx/libwayx-xserver.so cargo test --locked --test xlibre -- --ignored --nocapture
       - run: mkdir -p /tmp/wayx-runtime && chmod 700 /tmp/wayx-runtime && XDG_RUNTIME_DIR=/tmp/wayx-runtime WGPU_BACKEND=vulkan cargo run --locked -- gpu-smoke
-      - run: python3 scripts/test-native.py --core build/xlibre/hw/wayx/libwayx-xserver.so
+      - name: Check winit X11 runtime libraries
+        run: |
+          python3 - <<'PY'
+          import ctypes
+          for library in ("libX11.so.6", "libXcursor.so.1", "libX11-xcb.so.1",
+                          "libXi.so.6", "libxkbcommon.so.0", "libxkbcommon-x11.so.0"):
+              ctypes.CDLL(library)
+              print(f"Loaded {library}")
+          PY
+      - name: Native X11 rendering and XLibre lifecycle
+        env:
+          WGPU_BACKEND: vulkan
+        run: python3 scripts/test-native.py --core build/xlibre/hw/wayx/libwayx-xserver.so

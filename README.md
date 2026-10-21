@@ -30,7 +30,8 @@ sudo apt-get update
 sudo apt-get install -y build-essential pkg-config git python3 meson ninja-build \
   libx11-dev libxcb1-dev libxkbcommon-dev libwayland-dev wayland-protocols \
   libpixman-1-dev libxkbfile-dev libxfont-dev libmd-dev xtrans-dev x11proto-dev \
-  xkb-data x11-xkb-utils xauth libvulkan1 mesa-vulkan-drivers
+  xkb-data x11-xkb-utils xauth libvulkan1 mesa-vulkan-drivers \
+  libxcursor1 libx11-xcb1 libxi6 libxkbcommon-x11-0
 cargo build --locked
 ```
 
