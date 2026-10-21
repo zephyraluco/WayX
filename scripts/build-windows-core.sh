@@ -23,9 +23,9 @@ build_dependency protocols "$protocols" -Dlegacy=true
 compiler="$(fetch https://www.x.org/releases/individual/app/xkbcomp-1.5.0.tar.xz 2ac31f26600776db6d9cd79b3fcd272263faebac7eb85fb2f33c7141b8486060 xkbcomp-1.5.0)"
 build_dependency xkbcomp "$compiler"
 data="$(fetch https://xorg.freedesktop.org/archive/individual/data/xkeyboard-config/xkeyboard-config-2.48.tar.xz b77041324f0109f77161ee43743fe04baa485866af8460d31e476ad3f7648fd5 xkeyboard-config-2.48)"
-build_dependency xkbdata "$data"
+build_dependency xkbdata "$data" -Dnls=false
 export WAYX_XKB_BIN_DIR="$prefix/bin"
-export WAYX_XKB_DIR="$prefix/share/X11/xkb"
+export WAYX_XKB_DIR="$prefix/share/xkeyboard-config-2"
 export PATH="$(cygpath -u "$prefix/bin"):$PATH"
 bash scripts/build-xlibre.sh
 # Both halves use UCRT and the fixed C ABI. No C++/Rust objects cross DLL boundaries.

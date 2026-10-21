@@ -27,7 +27,7 @@ jobs:
           name: macos-core
           path: build/xlibre/hw/wayx/*.dylib
   windows-core:
-    runs-on: windows-latest
+    runs-on: windows-2022
     timeout-minutes: 45
     steps:
       - uses: actions/checkout@v4
@@ -58,6 +58,7 @@ jobs:
             mingw-w64-ucrt-x86_64-pkgconf
             mingw-w64-ucrt-x86_64-python
             bison
+            perl
             mingw-w64-ucrt-x86_64-libxslt
       - name: Build XKB tools, data and core DLL
         shell: msys2 {0}

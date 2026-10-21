@@ -33,7 +33,7 @@
 ## 第三项进展（未验收）
 
 - 构建脚本不再假定 `.so` 后缀，从 Meson 实际产物生成 `build/xlibre/wayx-core-path.txt`，支持 `.dylib`/`.dll` 的路径发现。
-- XKB 编译器及数据位置从原生 pkg-config 获取，可用 WAYX_XKB_BIN_DIR / WAYX_XKB_DIR 覆盖；输出到可写临时目录。
+- XKB 编译器及数据位置从原生 pkg-config 获取，可用 WAYX_XKB_BIN_DIR / WAYX_XKB_DIR 在构建及运行时覆盖；输出到可写临时目录。固定源包的数据生成、安装和真实核心使用该数据的输入回归已通过。
 - macOS 原生 XLibre 构建、真实 X11 协议测试、AppKit/Metal 呈现和动态库归档 CI 已通过（run 39611199753、39611787101）。
 - Windows 测试连接调整为回环 TCP；仅 Rust desktop 跨目标静态检查通过，不代表 XLibre DLL 可用。MSYS2 包目录缺少原生 xfont2、libxkbfile、xkbcomp、xtrans 等必需依赖；现使用固定版本 vcpkg 提供 C 依赖，并以校验 SHA-256 的源包补齐新版协议头、XKB 编译器和数据。新增 Windows 原生构建/协议/Win32 呈现 CI，必须以实际执行结果验收。
 - 第三项没有通过两个平台的核心/GUI 验收，因此尚未开始第四项 IME/XIM。

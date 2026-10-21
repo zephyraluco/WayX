@@ -27,6 +27,8 @@ static OsTimerPtr timer;
 static ScreenPtr screen;
 extern DeviceIntPtr wayx_pointer, wayx_keyboard;
 extern int dix_main(int, char **, char **);
+/* Private XKB paths are pinned to the same XLibre revision as this DDX. */
+extern const char *XkbBaseDirectory, *XkbBinDirectory;
 #include "wayx-rootless.h"
 
 int ddxProcessArgument(int argc,char **argv,int index) {
@@ -196,6 +198,17 @@ void ddxGiveUp(enum ExitCode error) {
 _X_EXPORT int wayx_xserver_run(const WayxApi *callbacks,WayxBackend *handle,int argc,char **argv) {
     if (!callbacks || callbacks->abi_version!=WAYX_ABI_VERSION || callbacks->struct_size<sizeof(WayxApi) || !handle) return 2;
     api=callbacks;backend=handle;
+    /* Copy environment values: callers may free their setup storage after entry. */
+    const char *base_env=getenv("WAYX_XKB_DIR"),*bin_env=getenv("WAYX_XKB_BIN_DIR");
+    char *base=base_env&&*base_env?strdup(base_env):NULL;
+    char *bin=bin_env&&*bin_env?strdup(bin_env):NULL;
+    if((base_env&&*base_env&&!base)||(bin_env&&*bin_env&&!bin)) {free(base);free(bin);return 2;}
+    const char *saved_base=XkbBaseDirectory,*saved_bin=XkbBinDirectory;
+    if(base) XkbBaseDirectory=base;
+    if(bin) XkbBinDirectory=bin;
     char *env[]={NULL};
-    return dix_main(argc,argv,env);
+    int code=dix_main(argc,argv,env);
+    XkbBaseDirectory=saved_base;XkbBinDirectory=saved_bin;
+    free(base);free(bin);
+    return code;
 }
