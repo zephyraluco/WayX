@@ -185,11 +185,7 @@ fn loopback_roundtrip() -> Result<()> {
             // verified above. TCP may reset on peer teardown when SSH channel
             // bookkeeping is still in flight (observed on Windows and macOS).
             if let Err(error) = remote.await?
-                && !error.chain().any(|cause| {
-                    cause
-                        .downcast_ref::<std::io::Error>()
-                        .is_some_and(|error| error.kind() == std::io::ErrorKind::ConnectionReset)
-                })
+                && !peer_reset_after_completion(&error)
             {
                 return Err(error.context("SSH server session teardown"));
             }
@@ -200,3 +196,26 @@ fn loopback_roundtrip() -> Result<()> {
     })
 }
 use anyhow::Context;
+
+// russh's transparent IO variant does not expose std::io::Error itself through
+// Error::source(), so inspect the typed wrapper as well as ordinary IO errors.
+fn peer_reset_after_completion(error: &anyhow::Error) -> bool {
+    error.chain().any(|cause| {
+        let io = cause.downcast_ref::<std::io::Error>().or_else(|| {
+            match cause.downcast_ref::<russh::Error>() {
+                Some(russh::Error::IO(error)) => Some(error),
+                _ => None,
+            }
+        });
+        io.is_some_and(|error| error.kind() == std::io::ErrorKind::ConnectionReset)
+    })
+}
+#[test]
+fn teardown_should_accept_typed_peer_reset_but_reject_truncated_data() {
+    let reset = russh::Error::IO(std::io::Error::from(std::io::ErrorKind::ConnectionReset));
+    assert!(peer_reset_after_completion(
+        &anyhow::Error::new(reset).context("server teardown")
+    ));
+    let truncated = russh::Error::IO(std::io::Error::from(std::io::ErrorKind::UnexpectedEof));
+    assert!(!peer_reset_after_completion(&truncated.into()));
+}
