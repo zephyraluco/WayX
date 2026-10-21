@@ -220,6 +220,21 @@ pub async fn connect(options: Options) -> Result<u32> {
             "",
         )
         .await?;
+    // disconnect() only enqueues SSH_MSG_DISCONNECT. Wait for the transport task
+    // to flush and finish before dropping the session (notably on Windows TCP).
+    let shutdown = tokio::time::timeout(Duration::from_secs(5), session)
+        .await
+        .context("SSH shutdown timeout")?;
+    // russh reports locally requested termination as Error::Disconnect, even
+    // after flushing successfully. Other completion failures remain errors.
+    if let Err(error) = shutdown
+        && !matches!(
+            error.downcast_ref::<russh::Error>(),
+            Some(russh::Error::Disconnect)
+        )
+    {
+        return Err(error.context("SSH transport shutdown"));
+    }
     exit.context("Remote command closed without an exit status")
 }
 async fn wait_success(channel: &mut Channel<client::Msg>, message: &str) -> Result<()> {

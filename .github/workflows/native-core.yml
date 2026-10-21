@@ -1,5 +1,44 @@
 name: Native XLibre core
-on: [push, pull_request]
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - "ddx/**"
+      - "include/**"
+      - "scripts/**"
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - "src/auth.rs"
+      - "src/backend.rs"
+      - "src/bridge.rs"
+      - "src/desktop.rs"
+      - "src/lib.rs"
+      - "src/main.rs"
+      - "src/selection.rs"
+      - "src/window.rs"
+      - "src/wm.rs"
+      - "tests/xlibre.rs"
+      - "tests/rootless.rs"
+      - "tests/window_manager.rs"
+  pull_request:
+    paths:
+      - "ddx/**"
+      - "include/**"
+      - "scripts/**"
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - "src/auth.rs"
+      - "src/backend.rs"
+      - "src/bridge.rs"
+      - "src/desktop.rs"
+      - "src/lib.rs"
+      - "src/main.rs"
+      - "src/selection.rs"
+      - "src/window.rs"
+      - "src/wm.rs"
+      - "tests/xlibre.rs"
+      - "tests/rootless.rs"
+      - "tests/window_manager.rs"
 permissions:
   contents: read
 jobs:

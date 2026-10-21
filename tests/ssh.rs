@@ -93,6 +93,14 @@ impl server::Handler for Remote {
 }
 #[test]
 fn encrypted_x11_cookie_substitution_and_exit_status() -> Result<()> {
+    // Repeatedly exercise real TCP teardown; Windows exposed a shutdown race
+    // which a single fast loopback session often misses.
+    for _ in 0..10 {
+        loopback_roundtrip()?;
+    }
+    Ok(())
+}
+fn loopback_roundtrip() -> Result<()> {
     tokio::runtime::Runtime::new()?.block_on(async {
         tokio::time::timeout(Duration::from_secs(20), async {
             let dir = tempfile::tempdir()?;
@@ -169,10 +177,11 @@ fn encrypted_x11_cookie_substitution_and_exit_status() -> Result<()> {
                 display,
                 command: "test-x11".into(),
             })
-            .await?;
+            .await
+            .context("SSH client session")?;
             ensure!(status == 0, "Remote command failed");
-            destination.await??;
-            remote.await??;
+            destination.await?.context("Local X11 destination")?;
+            remote.await?.context("SSH server session teardown")?;
             Ok::<_, anyhow::Error>(())
         })
         .await??;
