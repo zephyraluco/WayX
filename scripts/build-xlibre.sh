@@ -18,7 +18,7 @@ fi
 [[ "$(git -C "$source_dir" rev-parse HEAD)" == "$commit" ]] || { echo 'Unexpected XLibre revision' >&2; exit 1; }
 # Use a dedicated generated DDX directory; never replace upstream DDX sources.
 mkdir -p "$source_dir/hw/wayx"
-cp "$project_root/ddx/"*.c "$project_root/ddx/meson.build" "$project_root/include/wayx.h" "$source_dir/hw/wayx/"
+cp "$project_root/ddx/"*.c "$project_root/ddx/"*.h "$project_root/ddx/meson.build" "$project_root/include/wayx.h" "$source_dir/hw/wayx/"
 python3 - "$source_dir/hw/meson.build" <<'PY'
 from pathlib import Path
 import sys

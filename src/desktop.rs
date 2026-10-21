@@ -353,20 +353,26 @@ impl App {
             self.error = Some(error.into());
         }
     }
-    fn sync(&mut self, event_loop: &ActiveEventLoop) -> Result<()> {
-        if let Some(worker) = self.worker.as_ref()
-            && worker.is_finished()
+    fn finish_worker(&mut self, event_loop: &ActiveEventLoop) -> Result<bool> {
+        if !self
+            .worker
+            .as_ref()
+            .is_some_and(std::thread::JoinHandle::is_finished)
         {
-            let code = self
-                .worker
-                .take()
-                .unwrap()
-                .join()
-                .map_err(|_| anyhow!("XLibre worker panicked"))??;
-            if code != 0 {
-                return Err(anyhow!("XLibre exited with status {code}"));
-            }
-            event_loop.exit();
+            return Ok(false);
+        }
+        let Some(worker) = self.worker.take() else {
+            return Ok(false);
+        };
+        let code = worker
+            .join()
+            .map_err(|_| anyhow!("XLibre worker panicked"))??;
+        anyhow::ensure!(code == 0, "XLibre exited with status {code}");
+        event_loop.exit();
+        Ok(true)
+    }
+    fn sync(&mut self, event_loop: &ActiveEventLoop) -> Result<()> {
+        if self.finish_worker(event_loop)? {
             return Ok(());
         }
         if self.selection.is_none()
@@ -379,8 +385,26 @@ impl App {
                 self.backend.clone(),
             )?);
         }
-        if let Some(selection) = &mut self.selection {
-            selection.tick()?;
+        if let Some(error) = self
+            .selection
+            .as_mut()
+            .and_then(|selection| selection.tick().err())
+        {
+            // XLibre closes internal X11 clients before dix_main returns. Confirm
+            // its exit status before treating that brief teardown EOF as failure.
+            let deadline = Instant::now() + Duration::from_millis(100);
+            while self
+                .worker
+                .as_ref()
+                .is_some_and(|worker| !worker.is_finished())
+                && Instant::now() < deadline
+            {
+                std::thread::sleep(Duration::from_millis(1));
+            }
+            if self.finish_worker(event_loop)? {
+                return Ok(());
+            }
+            return Err(error);
         }
         let mut backend = self
             .backend

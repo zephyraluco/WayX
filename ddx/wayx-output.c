@@ -3,9 +3,11 @@
  * The included upstream file retains its original copyright and license. */
 #define InitOutput WayxVfbInitOutput
 #define ddxGiveUp WayxVfbGiveUp
+#define ddxProcessArgument WayxVfbProcessArgument
 #include "../vfb/InitOutput.c"
 #undef InitOutput
 #undef ddxGiveUp
+#undef ddxProcessArgument
 #include "wayx.h"
 #include "dix/input_priv.h"
 #include "windowstr.h"
@@ -25,6 +27,13 @@ static OsTimerPtr timer;
 static ScreenPtr screen;
 extern DeviceIntPtr wayx_pointer, wayx_keyboard;
 extern int dix_main(int, char **, char **);
+#include "wayx-rootless.h"
+
+int ddxProcessArgument(int argc,char **argv,int index) {
+    if (!strcmp(argv[index],"-wayx-rootless")) {rootless=TRUE;return 1;}
+    return WayxVfbProcessArgument(argc,argv,index);
+}
+
 
 /* USB HID usage -> Linux evdev XKB keycode (+8). No enum/scancode casts. */
 static unsigned int keycode(unsigned int hid) {
@@ -64,12 +73,19 @@ static void button(int which,int pressed) {
     valuator_mask_free(&mask);
 }
 static CARD32 poll_backend(OsTimerPtr unused,CARD32 now,void *closure) {
+    if (rootless && screen->root) sync_rootless_windows();
     WayxInputEvent event;
     for (int count=0;count<4096 && api->input_poll(backend,&event)==1;count++) {
+        WindowPtr target=NULL;
+        if (rootless && event.window!=0 && event.window!=1) {
+            if (dixLookupWindow(&target,event.window,serverClient,DixReadAccess)!=Success) continue;
+        }
         switch (event.kind) {
         case WAYX_MOTION: {
             ValuatorMask *mask=valuator_mask_new(2);
-            valuator_mask_set_double(mask,0,event.x);valuator_mask_set_double(mask,1,event.y);
+            if (target) {XID values[]={Above};ConfigureWindow(target,CWStackMode,values,serverClient);}
+            valuator_mask_set_double(mask,0,event.x+(target?target->drawable.x:0));
+            valuator_mask_set_double(mask,1,event.y+(target?target->drawable.y:0));
             QueuePointerEvents(wayx_pointer,MotionNotify,0,POINTER_ABSOLUTE|POINTER_SCREEN,mask);
             valuator_mask_free(&mask);break;
         }
@@ -85,14 +101,21 @@ static CARD32 poll_backend(OsTimerPtr unused,CARD32 now,void *closure) {
             for(int i=0;i<ny;i++) {button(vertical,1);button(vertical,0);}
             for(int i=0;i<nx;i++) {button(horizontal,1);button(horizontal,0);} break;
         }
-        case WAYX_FOCUS:if (!event.flags) release_input();break;
-        case WAYX_CLOSE:case WAYX_SHUTDOWN:GiveUp(0);break;
+        case WAYX_FOCUS:
+            if (!event.flags) release_input();
+            else if (target) SetInputFocus(serverClient,GetMaster(wayx_keyboard,MASTER_KEYBOARD),target->drawable.id,RevertToPointerRoot,CurrentTime,TRUE);
+            break;
+        case WAYX_CLOSE:
+            if (target) FreeResource(target->drawable.id,X11_RESTYPE_NONE);
+            else GiveUp(0);
+            break;
+        case WAYX_SHUTDOWN:GiveUp(0);break;
         /* RESIZE currently scales the fixed X screen. TEXT/CLIPBOARD are consumed
          * by the selection/XIM layer, not synthesized into raw X keycodes. */
         default:break;
         }
     }
-    if (damage && !RegionNil(DamageRegion(damage))) {
+    if (!rootless && damage && !RegionNil(DamageRegion(damage))) {
         RegionPtr region=DamageRegion(damage);
         BoxPtr boxes=RegionRects(region);
         vfbScreenInfoPtr fb=vfbGetScreenPriv(screen);
@@ -122,6 +145,15 @@ static void attach_screen(CallbackListPtr *list,void *closure,void *data) {
         FatalError("WayX failed to create root display\n");
     const char title[]="WayX — XLibre desktop";
     api->window_title(backend,1,(const uint8_t*)title,sizeof(title)-1);
+    if (rootless) {
+        if (!CompositeClientWindowType) FatalError("WayX rootless requires the Composite extension\n");
+        api->window_map(backend,1,0);
+        title_atom=dixAddAtom("_NET_WM_NAME");
+        if (compRedirectSubwindows(serverClient,screen->root,CompositeRedirectManual)!=Success)
+            FatalError("WayX could not redirect top-level windows; Composite is required\n");
+        timer=TimerSet(NULL,0,8,poll_backend,NULL);
+        return;
+    }
     damage=DamageCreate(NULL,NULL,DamageReportNone,TRUE,screen,NULL);
     if (!damage) FatalError("WayX could not create Damage tracking\n");
     DamageRegister(&screen->GetScreenPixmap(screen)->drawable,damage);
@@ -136,6 +168,7 @@ void InitOutput(int argc,char **argv) {
 void ddxGiveUp(enum ExitCode error) {
     if (timer) {TimerFree(timer);timer=NULL;}
     damage=NULL;
+    while (wayx_windows) {WayxWindow *entry=wayx_windows;wayx_windows=entry->next;remove_window(entry);}
     if (backend) api->window_destroy(backend,1);
     WayxVfbGiveUp(error);
 }

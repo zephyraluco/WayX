@@ -25,6 +25,9 @@ enum Command {
     Serve {
         #[arg(long)]
         core: PathBuf,
+        /// Present each X11 top-level window as an independent native window.
+        #[arg(long)]
+        rootless: bool,
         /// Exit after N presented frames, then shut down XLibre.
         #[arg(long, value_parser=clap::value_parser!(u32).range(1..))]
         frames: Option<u32>,
@@ -106,7 +109,12 @@ fn main() -> Result<()> {
         #[cfg(feature = "desktop")]
         Command::GpuSmoke => pollster::block_on(wayx::desktop::gpu_smoke())?,
         #[cfg(feature = "desktop")]
-        Command::Serve { core, args, frames } => {
+        Command::Serve {
+            core,
+            args,
+            frames,
+            rootless,
+        } => {
             let backend =
                 std::sync::Arc::new(std::sync::Mutex::new(wayx::backend::Backend::default()));
             let selection_config = match (
@@ -136,6 +144,9 @@ fn main() -> Result<()> {
                     ) -> i32>(b"wayx_xserver_run\0")
                 }?;
                 let mut argv = vec![std::ffi::CString::new("XWayX")?];
+                if rootless {
+                    argv.push(std::ffi::CString::new("-wayx-rootless")?);
+                }
                 for arg in args {
                     argv.push(std::ffi::CString::new(arg)?);
                 }

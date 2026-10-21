@@ -4,6 +4,7 @@ import argparse
 import os
 from pathlib import Path
 import shutil
+import shlex
 import subprocess
 import tempfile
 import time
@@ -49,6 +50,28 @@ with tempfile.TemporaryDirectory(prefix="wayx-native-") as temp:
                                env=env, check=True, timeout=30)
                 if Path(f"/tmp/.X11-unix/X{core_display}").exists():
                     raise RuntimeError("XLibre socket survived normal shutdown")
+                flags = shlex.split(subprocess.check_output(["pkg-config", "--cflags", "--libs", "x11"], text=True))
+                client = Path(temp) / "rootless-client"
+                subprocess.run(["cc", "-std=c11", "-D_POSIX_C_SOURCE=200809L", "-Wall", "-Wextra", "-Werror",
+                                "tests/native-rootless.c", *flags, "-o", str(client)], check=True)
+                rootless = subprocess.Popen([binary, "serve", "--rootless", "--core", str(args.core.resolve()),
+                                             "--", f":{core_display}", "-screen", "0", "1280x800x24",
+                                             "-crtcs", "1@1280x800", "-nolisten", "tcp", "-auth", str(auth)], env=env)
+                try:
+                    client_env = env.copy()
+                    client_env["XAUTHORITY"] = str(auth)
+                    subprocess.run([str(client), f":{core_display}", f":{host}"], env=client_env, check=True, timeout=30)
+                    if rootless.poll() is not None:
+                        raise RuntimeError("Closing a rootless window terminated the server")
+                finally:
+                    rootless.terminate()
+                    try:
+                        code = rootless.wait(timeout=5)
+                        if code != 0:
+                            raise RuntimeError(f"Rootless shutdown failed with exit status {code}")
+                    except subprocess.TimeoutExpired:
+                        rootless.kill()
+                        rootless.wait()
             print("Native window rendering and requested XLibre lifecycle checks passed.")
         finally:
             server.terminate()

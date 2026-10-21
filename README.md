@@ -2,9 +2,9 @@
 
 按 **XLibre X Server Core + C DDX Bridge + Rust + winit + wgpu + russh** 架构实现的 X11 转发客户端。
 
-当前版本打通 Linux 上的 **rootful MVP**：远端 X11 应用通过 SSH 标准 X11 forwarding 接入本地 XLibre；XLibre FB/Pixman 生成的软件帧缓冲经 Damage 上传到 Rust，最终由 wgpu 呈现在 winit 原生窗口中。
+当前版本支持 Linux 上的 **rootful / rootless 显示**：远端 X11 应用通过 SSH 标准 X11 forwarding 接入本地 XLibre；XLibre FB/Pixman 生成的软件帧缓冲经 Damage 上传到 Rust，最终由 wgpu 呈现在 winit 原生窗口中。
 
-**不是完整的跨平台 X Server 发行版。** Rust 显示后端面向 Win32 / AppKit / Linux Wayland、X11；XLibre DDX 当前只在 Linux 构建和运行验证。逐 X11 顶层窗口的 rootless 映射、完整 IME/XIM 和 Windows/macOS 的 XLibre 集成尚未完成。Linux 使用 Wayland 作为本地窗口系统，不等于支持远端原生 Wayland 协议转发。
+**不是完整的跨平台 X Server 发行版。** Rust 显示后端面向 Win32 / AppKit / Linux Wayland、X11；XLibre DDX 当前只在 Linux 构建和运行验证。已支持逐 X11 顶层窗口的 rootless 映射；完整窗口管理、IME/XIM 和 Windows/macOS 的 XLibre 集成仍在推进。Linux 使用 Wayland 作为本地窗口系统，不等于支持远端原生 Wayland 协议转发。
 
 ## 工程结构
 
@@ -98,7 +98,20 @@ cargo run --locked -- serve --core build/xlibre/hw/wayx/libwayx-xserver.so -- \
 DISPLAY=:100 XAUTHORITY=$PWD/.cache/Xauthority xterm
 ```
 
-单个原生窗口承载整个 X 屏幕；内部 X 窗口由 XLibre 管理。需要桌面装饰时，可在该显示中启动自己选择的 X11 窗口管理器。拖动原生窗口尺寸当前只缩放画面，不改变 X 屏幕分辨率。
+默认单个原生窗口承载整个 X 屏幕；内部 X 窗口由 XLibre 管理。需要桌面装饰时，可在该显示中启动自己选择的 X11 窗口管理器。拖动原生窗口尺寸当前只缩放画面，不改变 X 屏幕分辨率。
+
+## Rootless：每个 X11 顶层窗口独立显示
+
+在上述 `serve` 命令的 `--` 之前添加 `--rootless`：
+
+```sh
+cargo run --locked -- serve --rootless --core build/xlibre/hw/wayx/libwayx-xserver.so -- \
+  :100 -screen 0 1280x800x24 -crtcs 1@1280x800 -auth .cache/Xauthority -nolisten tcp
+```
+
+顶层窗口使用 XLibre Composite 的独立 Pixmap，因此互相遮挡也能保留正确像素；嵌套子窗口合成到所属顶层窗口。支持标题更新、映射/隐藏、窗口销毁和客户端尺寸变化；根桌面保持隐藏。每个原生窗口的键鼠输入按对应的 X11 窗口路由。
+
+当前仍限定软件 32-bpp XRGB 显示，尚未完成透明窗口、弹出窗口装饰策略及完整 ICCCM/EWMH 窗口管理。不要同时在 rootless 显示中启动另一个 Composite 管理器。
 
 ## SSH X11 forwarding
 
@@ -126,6 +139,8 @@ cargo test --locked --all-targets
 bash scripts/test-c-bridge.sh
 WAYX_TEST_CORE=$PWD/build/xlibre/hw/wayx/libwayx-xserver.so \
   cargo test --locked --test xlibre -- --ignored --nocapture
+WAYX_TEST_CORE=$PWD/build/xlibre/hw/wayx/libwayx-xserver.so \
+  cargo test --locked --test rootless -- --ignored --nocapture
 cargo run --locked -- gpu-smoke
 ```
 
@@ -136,3 +151,5 @@ cargo run --locked -- gpu-smoke
 ## 许可
 
 本仓库自有代码使用 MIT。XLibre、Pixman 及其他依赖保留各自许可；XLibre 按文件包含不同许可，分发其源码或二进制时须单独遵守。构建脚本从上游获取代码，不将其声明为本仓库自有代码。
+
+后续功能按 [实施进度](docs/progress.md) 逐项完成验证并独立提交。

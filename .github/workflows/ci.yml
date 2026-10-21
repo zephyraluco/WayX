@@ -38,6 +38,7 @@ jobs:
       - run: bash scripts/build-xlibre.sh
       - run: cargo build --locked && bash scripts/test-c-bridge.sh
       - run: WAYX_TEST_CORE=$PWD/build/xlibre/hw/wayx/libwayx-xserver.so cargo test --locked --test xlibre -- --ignored --nocapture
+      - run: WAYX_TEST_CORE=$PWD/build/xlibre/hw/wayx/libwayx-xserver.so cargo test --locked --test rootless -- --ignored --nocapture
       - run: mkdir -p /tmp/wayx-runtime && chmod 700 /tmp/wayx-runtime && XDG_RUNTIME_DIR=/tmp/wayx-runtime WGPU_BACKEND=vulkan cargo run --locked -- gpu-smoke
       - name: Check winit X11 runtime libraries
         run: |
