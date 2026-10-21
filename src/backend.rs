@@ -129,6 +129,7 @@ pub struct Window {
     pub x: i32,
     pub y: i32,
     pub mapped: bool,
+    pub state: crate::window::WindowState,
     pub framebuffer: Framebuffer,
 }
 
@@ -155,12 +156,15 @@ pub mod event {
     pub const TEXT: u32 = 8;
     pub const CLIPBOARD: u32 = 9;
     pub const SHUTDOWN: u32 = 10;
+    pub const MOVE: u32 = 11;
+    pub const STATE: u32 = 12;
 }
 
 #[derive(Default)]
 pub struct Backend {
     pub windows: BTreeMap<u32, Window>,
     pub focus: Option<u32>,
+    pub requested_focus: Option<u32>,
     pub clipboard: String,
     pub clipboard_revision: u64,
     events: VecDeque<InputEvent>,
@@ -195,7 +199,8 @@ impl Backend {
                 title: format!("WayX — {id:#x}"),
                 x: 0,
                 y: 0,
-                mapped: true,
+                mapped: false,
+                state: Default::default(),
                 framebuffer: Framebuffer::new(width, height)?,
             },
         );
@@ -241,11 +246,14 @@ impl Backend {
         if self.focus == Some(id) {
             self.focus = None;
         }
+        if self.requested_focus == Some(id) {
+            self.requested_focus = None;
+        }
         self.events.retain(|e| e.window != id);
         Ok(())
     }
     pub fn push_input(&mut self, input: InputEvent) -> Result<(), Error> {
-        if !(event::MOTION..=event::SHUTDOWN).contains(&input.kind)
+        if !(event::MOTION..=event::STATE).contains(&input.kind)
             || !input.x.is_finite()
             || !input.y.is_finite()
         {
@@ -273,7 +281,11 @@ impl Backend {
             return Err(Error::QueueFull);
         }
         if input.kind == event::FOCUS {
-            self.focus = (input.flags != 0).then_some(input.window);
+            if input.flags != 0 {
+                self.focus = Some(input.window);
+            } else if self.focus == Some(input.window) {
+                self.focus = None;
+            }
         }
         self.events.push_back(input);
         Ok(())

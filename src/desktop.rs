@@ -1,3 +1,4 @@
+use crate::window::{self as window_state, WindowState};
 use crate::{
     backend::{Framebuffer, InputEvent, Rect, event},
     bridge::SharedBackend,
@@ -8,6 +9,7 @@ use std::{
     sync::Arc,
     time::{Duration, Instant},
 };
+use winit::raw_window_handle::{HasWindowHandle, RawWindowHandle};
 use winit::{
     application::ApplicationHandler,
     event::{ElementState, Ime, MouseButton, MouseScrollDelta, WindowEvent},
@@ -251,6 +253,10 @@ struct Native {
     config: wgpu::SurfaceConfiguration,
     image: Image,
     cursor: (f64, f64),
+    applied_state: Option<WindowState>,
+    remote_size: (u32, u32),
+    title: String,
+    transient_owner: Option<u32>,
 }
 impl Native {
     async fn new(
@@ -259,14 +265,39 @@ impl Native {
         title: &str,
         width: u32,
         height: u32,
+        state: &WindowState,
+        owner: Option<&Window>,
     ) -> Result<Self> {
-        let window = Arc::new(
-            event_loop.create_window(
-                Window::default_attributes()
-                    .with_title(title)
-                    .with_inner_size(winit::dpi::PhysicalSize::new(width, height)),
-            )?,
-        );
+        let popup = state.flags & window_state::OVERRIDE_REDIRECT != 0;
+        let mut attributes = Window::default_attributes()
+            .with_title(title)
+            .with_inner_size(winit::dpi::PhysicalSize::new(width, height))
+            .with_decorations(!popup)
+            .with_active(!popup);
+        if state.flags & window_state::ROOTLESS != 0 {
+            attributes =
+                attributes.with_position(winit::dpi::PhysicalPosition::new(state.x, state.y));
+        }
+        #[cfg(all(unix, not(target_os = "macos")))]
+        {
+            use winit::platform::x11::{WindowAttributesExtX11, WindowType};
+            if popup {
+                attributes = attributes
+                    .with_override_redirect(true)
+                    .with_x11_window_type(vec![WindowType::PopupMenu]);
+            } else if state.transient_for != 0 {
+                attributes = attributes.with_x11_window_type(vec![WindowType::Dialog]);
+            }
+        }
+        #[cfg(target_os = "windows")]
+        if let Some(owner) = owner {
+            use winit::platform::windows::WindowAttributesExtWindows;
+            if let RawWindowHandle::Win32(handle) = owner.window_handle()?.as_raw() {
+                attributes = attributes.with_owner_window(handle.hwnd.get());
+            }
+        }
+        let window = Arc::new(event_loop.create_window(attributes)?);
+        let _ = owner;
         window.set_ime_allowed(true);
         let instance = wgpu::Instance::new(wgpu::InstanceDescriptor {
             backends: wgpu::util::backend_bits_from_env().unwrap_or(wgpu::Backends::all()),
@@ -293,7 +324,139 @@ impl Native {
             config,
             image,
             cursor: (0., 0.),
+            applied_state: None,
+            remote_size: (width, height),
+            title: title.to_owned(),
+            transient_owner: None,
         })
+    }
+    fn apply_state(
+        &mut self,
+        state: &WindowState,
+        width: u32,
+        height: u32,
+        title: &str,
+    ) -> Result<()> {
+        if self.title != title {
+            self.window.set_title(title);
+            self.title = title.to_owned();
+        }
+        if state.flags & window_state::ROOTLESS == 0 {
+            return Ok(());
+        }
+        let previous = self.applied_state;
+        if previous.is_none_or(|old| old.x != state.x || old.y != state.y) {
+            let position = winit::dpi::PhysicalPosition::new(state.x, state.y);
+            if self.window.outer_position().ok() != Some(position) {
+                self.window.set_outer_position(position);
+            }
+        }
+        if self.remote_size != (width, height) {
+            let size = winit::dpi::PhysicalSize::new(width, height);
+            if self.window.inner_size() != size {
+                let _ = self.window.request_inner_size(size);
+            }
+            self.remote_size = (width, height);
+        }
+        if previous != Some(*state) {
+            self.window
+                .set_decorations(state.flags & window_state::OVERRIDE_REDIRECT == 0);
+            self.window.set_resizable(
+                !(state.min_width != 0
+                    && state.max_width == state.min_width
+                    && state.min_height != 0
+                    && state.max_height == state.min_height),
+            );
+            self.window
+                .set_min_inner_size(Some(winit::dpi::PhysicalSize::new(
+                    state.min_width.max(1),
+                    state.min_height.max(1),
+                )));
+            let max = if state.max_width == 0 && state.max_height == 0 {
+                None
+            } else {
+                Some(winit::dpi::PhysicalSize::new(
+                    if state.max_width == 0 {
+                        crate::backend::MAX_DIMENSION
+                    } else {
+                        state.max_width
+                    },
+                    if state.max_height == 0 {
+                        crate::backend::MAX_DIMENSION
+                    } else {
+                        state.max_height
+                    },
+                ))
+            };
+            self.window.set_max_inner_size(max);
+            self.window
+                .set_resize_increments(Some(winit::dpi::PhysicalSize::new(
+                    state.width_inc.max(1),
+                    state.height_inc.max(1),
+                )));
+            self.window.set_window_level(
+                if state.flags & (window_state::ABOVE | window_state::OVERRIDE_REDIRECT) != 0 {
+                    winit::window::WindowLevel::AlwaysOnTop
+                } else {
+                    winit::window::WindowLevel::Normal
+                },
+            );
+            if previous.is_none_or(|old| (old.flags ^ state.flags) & window_state::MINIMIZED != 0) {
+                self.window
+                    .set_minimized(state.flags & window_state::MINIMIZED != 0);
+            }
+            if previous.is_none_or(|old| (old.flags ^ state.flags) & window_state::MAXIMIZED != 0) {
+                self.window
+                    .set_maximized(state.flags & window_state::MAXIMIZED != 0);
+            }
+            if previous.is_none_or(|old| (old.flags ^ state.flags) & window_state::FULLSCREEN != 0)
+            {
+                self.window.set_fullscreen(
+                    (state.flags & window_state::FULLSCREEN != 0)
+                        .then_some(winit::window::Fullscreen::Borderless(None)),
+                );
+            }
+            self.applied_state = Some(*state);
+        }
+        Ok(())
+    }
+    fn x11_id(&self) -> Result<Option<u32>> {
+        Ok(match self.window.window_handle()?.as_raw() {
+            RawWindowHandle::Xlib(handle) => Some(u32::try_from(handle.window)?),
+            RawWindowHandle::Xcb(handle) => Some(handle.window.get()),
+            _ => None,
+        })
+    }
+    fn sync_transient(&mut self, owner: Option<u32>) -> Result<()> {
+        if self.transient_owner == owner {
+            return Ok(());
+        }
+        if let Some(id) = self.x11_id()? {
+            use x11rb::{
+                connection::Connection,
+                protocol::xproto::{AtomEnum, ConnectionExt, PropMode},
+                wrapper::ConnectionExt as _,
+            };
+            let (connection, _) = x11rb::connect(None)?;
+            if let Some(owner) = owner {
+                connection
+                    .change_property32(
+                        PropMode::REPLACE,
+                        id,
+                        AtomEnum::WM_TRANSIENT_FOR,
+                        AtomEnum::WINDOW,
+                        &[owner],
+                    )?
+                    .check()?;
+            } else {
+                connection
+                    .delete_property(id, AtomEnum::WM_TRANSIENT_FOR.into())?
+                    .check()?;
+            }
+            connection.flush()?;
+        }
+        self.transient_owner = owner;
+        Ok(())
     }
     fn resize_surface(&mut self, width: u32, height: u32) {
         if width == 0 || height == 0 {
@@ -339,6 +502,7 @@ struct App {
     last_clipboard: Instant,
     error: Option<anyhow::Error>,
     demo: bool,
+    rootless: bool,
     frame_limit: Option<u32>,
     presented_frames: u32,
     selection: Option<crate::selection::SelectionBridge>,
@@ -379,11 +543,15 @@ impl App {
             && self.backend.lock().unwrap().windows.contains_key(&1)
             && let Some((display, auth)) = self.selection_config.take()
         {
-            self.selection = Some(crate::selection::SelectionBridge::connect_local(
+            let mut selection = crate::selection::SelectionBridge::connect_local(
                 display,
                 &auth,
                 self.backend.clone(),
-            )?);
+            )?;
+            if self.rootless {
+                selection.enable_window_management()?;
+            }
+            self.selection = Some(selection);
         }
         if let Some(error) = self
             .selection
@@ -416,21 +584,53 @@ impl App {
             if !window.mapped {
                 continue;
             }
-            if let Some(native) = self.native.values().find(|n| n.id == window.id) {
-                native.window.set_title(&window.title);
-            } else {
+            if !self.native.values().any(|native| native.id == window.id) {
+                let owner = self
+                    .native
+                    .values()
+                    .find(|native| native.id == window.state.transient_for)
+                    .map(|native| native.window.as_ref());
                 let native = pollster::block_on(Native::new(
                     event_loop,
                     window.id,
                     &window.title,
                     window.framebuffer.width,
                     window.framebuffer.height,
+                    &window.state,
+                    owner,
                 ))?;
                 self.native.insert(native.window.id(), native);
             }
+            if let Some(native) = self
+                .native
+                .values_mut()
+                .find(|native| native.id == window.id)
+            {
+                native.apply_state(
+                    &window.state,
+                    window.framebuffer.width,
+                    window.framebuffer.height,
+                    &window.title,
+                )?;
+            }
         }
-        for native in self.native.values() {
+        let owners = self
+            .native
+            .values()
+            .map(|native| Ok((native.id, native.x11_id()?)))
+            .collect::<Result<HashMap<_, _>>>()?;
+        for native in self.native.values_mut() {
+            if let Some(window) = backend.windows.get(&native.id) {
+                native
+                    .sync_transient(owners.get(&window.state.transient_for).copied().flatten())?;
+            }
             native.window.request_redraw();
+        }
+        if let Some(id) = backend.requested_focus.take()
+            && let Some(native) = self.native.values().find(|native| native.id == id)
+            && !native.window.has_focus()
+        {
+            native.window.focus_window();
         }
         if self.last_clipboard.elapsed() >= Duration::from_millis(250) {
             if let Some(clipboard) = &mut self.clipboard {
@@ -501,8 +701,23 @@ impl ApplicationHandler for App {
             WindowEvent::Resized(size) => {
                 native.resize_surface(size.width, size.height);
                 input.kind = event::RESIZE;
-                input.x = size.width as f64;
-                input.y = size.height as f64;
+                let state = native.applied_state.unwrap_or_default();
+                let (width, height) = if state.flags & window_state::ROOTLESS != 0 {
+                    state.constrain(size.width, size.height)
+                } else {
+                    (size.width, size.height)
+                };
+                input.x = width as f64;
+                input.y = height as f64;
+                input.flags = (u32::from(native.window.is_maximized()) * window_state::MAXIMIZED)
+                    | (u32::from(native.window.is_minimized().unwrap_or(false))
+                        * window_state::MINIMIZED)
+                    | (u32::from(native.window.fullscreen().is_some()) * window_state::FULLSCREEN);
+            }
+            WindowEvent::Moved(position) => {
+                input.kind = event::MOVE;
+                input.x = position.x as f64;
+                input.y = position.y as f64;
             }
             WindowEvent::RedrawRequested => {
                 let mut backend = self.backend.lock().unwrap();
@@ -722,6 +937,7 @@ pub fn hid_usage(key: KeyCode) -> Option<u32> {
 pub fn run(
     backend: SharedBackend,
     demo: bool,
+    rootless: bool,
     worker: Option<std::thread::JoinHandle<Result<i32>>>,
     selection_config: Option<(u16, std::path::PathBuf)>,
     frame_limit: Option<u32>,
@@ -734,6 +950,7 @@ pub fn run(
         last_clipboard: Instant::now(),
         error: None,
         demo,
+        rootless,
         frame_limit,
         presented_frames: 0,
         selection: None,

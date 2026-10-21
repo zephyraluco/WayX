@@ -42,6 +42,7 @@ pub struct SelectionBridge {
     send: HashMap<(Window, Atom), Send>,
     timestamp: Timestamp,
     last_poll: Instant,
+    manager: Option<crate::wm::WindowManager>,
 }
 impl SelectionBridge {
     pub fn new(conn: RustConnection, screen: usize, backend: SharedBackend) -> Result<Self> {
@@ -93,6 +94,7 @@ impl SelectionBridge {
             send: HashMap::new(),
             timestamp: 0,
             last_poll: Instant::now() - Duration::from_secs(1),
+            manager: None,
         })
     }
     pub fn connect(display: &str, backend: SharedBackend) -> Result<Self> {
@@ -129,6 +131,16 @@ impl SelectionBridge {
             cookie.to_vec(),
         )?;
         Self::new(conn, 0, backend)
+    }
+    /// Enable the rootless window manager on this internal X11 connection.
+    pub fn enable_window_management(&mut self) -> Result<()> {
+        self.manager = Some(crate::wm::WindowManager::new(
+            &self.conn,
+            0,
+            self.window,
+            self.backend.clone(),
+        )?);
+        Ok(())
     }
     fn request(&mut self, owner: Window) -> Result<()> {
         self.owner = owner;
@@ -203,7 +215,8 @@ impl SelectionBridge {
                 );
                 self.conn.change_window_attributes(
                     e.requestor,
-                    &ChangeWindowAttributesAux::new().event_mask(EventMask::PROPERTY_CHANGE),
+                    &ChangeWindowAttributesAux::new()
+                        .event_mask(EventMask::PROPERTY_CHANGE | EventMask::FOCUS_CHANGE),
                 )?;
                 self.conn.change_property32(
                     PropMode::REPLACE,
@@ -279,6 +292,11 @@ impl SelectionBridge {
             self.last_poll = Instant::now();
         }
         while let Some(event) = self.conn.poll_for_event()? {
+            if let Some(manager) = &mut self.manager
+                && manager.handle(&self.conn, &event)?
+            {
+                continue;
+            }
             match event {
                 Event::SelectionRequest(e) => self.selection_request(e)?,
                 Event::XfixesSelectionNotify(e) => {
@@ -379,6 +397,9 @@ impl SelectionBridge {
                 Event::Error(error) => tracing::warn!(?error, "X11 selection request failed"),
                 _ => {}
             }
+        }
+        if let Some(manager) = &mut self.manager {
+            manager.tick(&self.conn)?;
         }
         self.send
             .retain(|_, send| send.started.elapsed() < Duration::from_secs(30));

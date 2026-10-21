@@ -83,13 +83,17 @@ static CARD32 poll_backend(OsTimerPtr unused,CARD32 now,void *closure) {
         switch (event.kind) {
         case WAYX_MOTION: {
             ValuatorMask *mask=valuator_mask_new(2);
-            if (target) {XID values[]={Above};ConfigureWindow(target,CWStackMode,values,serverClient);}
             valuator_mask_set_double(mask,0,event.x+(target?target->drawable.x:0));
             valuator_mask_set_double(mask,1,event.y+(target?target->drawable.y:0));
             QueuePointerEvents(wayx_pointer,MotionNotify,0,POINTER_ABSOLUTE|POINTER_SCREEN,mask);
             valuator_mask_free(&mask);break;
         }
-        case WAYX_BUTTON:button(event.detail,event.flags!=0);break;
+        case WAYX_BUTTON:
+            if(target && event.flags && !target->overrideRedirect) {
+                XID values[]={Above};ConfigureWindow(target,CWStackMode,values,serverClient);
+                SetInputFocus(serverClient,GetMaster(wayx_keyboard,MASTER_KEYBOARD),target->drawable.id,RevertToPointerRoot,CurrentTime,TRUE);
+            }
+            button(event.detail,event.flags!=0);break;
         case WAYX_KEY: {
             unsigned int key=keycode(event.detail);
             if (key) {QueueKeyboardEvents(wayx_keyboard,event.flags?KeyPress:KeyRelease,key);keys_down[key]=event.flags!=0;}
@@ -106,9 +110,24 @@ static CARD32 poll_backend(OsTimerPtr unused,CARD32 now,void *closure) {
             else if (target) SetInputFocus(serverClient,GetMaster(wayx_keyboard,MASTER_KEYBOARD),target->drawable.id,RevertToPointerRoot,CurrentTime,TRUE);
             break;
         case WAYX_CLOSE:
-            if (target) FreeResource(target->drawable.id,X11_RESTYPE_NONE);
+            if (target) close_window(target);
             else GiveUp(0);
             break;
+        case WAYX_RESIZE:
+            if(target && event.x>=1 && event.x<=16384 && event.y>=1 && event.y<=16384) {
+                uint32_t width=event.x,height=event.y;
+                if(api->window_constrain(backend,event.window,&width,&height)==0) {
+                    XID values[]={width,height};ConfigureWindow(target,CWWidth|CWHeight,values,serverClient);
+                    native_window_state(target,event.flags);
+                }
+            }
+            break;
+        case WAYX_MOVE:
+            if(target && event.x>=-32768 && event.x<=32767 && event.y>=-32768 && event.y<=32767) {
+                XID values[]={(int32_t)event.x,(int32_t)event.y};ConfigureWindow(target,CWX|CWY,values,serverClient);
+            }
+            break;
+        case WAYX_STATE:if(target) native_window_state(target,event.flags);break;
         case WAYX_SHUTDOWN:GiveUp(0);break;
         /* RESIZE currently scales the fixed X screen. TEXT/CLIPBOARD are consumed
          * by the selection/XIM layer, not synthesized into raw X keycodes. */
@@ -149,11 +168,13 @@ static void attach_screen(CallbackListPtr *list,void *closure,void *data) {
         if (!CompositeClientWindowType) FatalError("WayX rootless requires the Composite extension\n");
         api->window_map(backend,1,0);
         title_atom=dixAddAtom("_NET_WM_NAME");
+        init_window_manager_atoms();
         if (compRedirectSubwindows(serverClient,screen->root,CompositeRedirectManual)!=Success)
             FatalError("WayX could not redirect top-level windows; Composite is required\n");
         timer=TimerSet(NULL,0,8,poll_backend,NULL);
         return;
     }
+    api->window_map(backend,1,1);
     damage=DamageCreate(NULL,NULL,DamageReportNone,TRUE,screen,NULL);
     if (!damage) FatalError("WayX could not create Damage tracking\n");
     DamageRegister(&screen->GetScreenPixmap(screen)->drawable,damage);

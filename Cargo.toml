@@ -15,6 +15,7 @@ ssh = ["dep:russh", "dep:tokio", "dep:rand"]
 
 [dependencies]
 anyhow = "1"
+thiserror = "2"
 clap = { version = "4", features = ["derive"] }
 libloading = "0.8"
 tracing = "0.1"

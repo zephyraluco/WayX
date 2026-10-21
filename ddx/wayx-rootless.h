@@ -22,6 +22,8 @@ typedef struct WayxWindow {
 static WayxWindow *wayx_windows;
 static Bool rootless;
 static Atom title_atom;
+#include <X11/Xutil.h>
+#include "wayx-wm.h"
 
 static void window_damage_destroyed(DamagePtr object, void *closure) {
     WayxWindow *window=closure;
@@ -84,6 +86,7 @@ static void sync_rootless_windows(void) {
         }
         entry->seen=TRUE;
         window_title(window);
+        sync_window_state(window);
         Bool mapped=window->mapped && window->realized;
         if (entry->mapped!=mapped) {
             api->window_map(backend,entry->id,mapped);

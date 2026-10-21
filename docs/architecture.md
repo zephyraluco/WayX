@@ -4,7 +4,7 @@
 flowchart TB
   A[Remote X11 Applications] <--> B[russh · SSH X11 Forwarding]
   B <--> C[XLibre Core · FB / Pixman]
-  C <--> D[Custom C DDX · ABI v1]
+  C <--> D[Custom C DDX · ABI v2]
   D <--> E[Rust Window / Framebuffer / Input State]
   E --> F[wgpu · Damage Texture Upload]
   E <--> G[winit · Native Windows and Events]
@@ -26,9 +26,15 @@ flowchart TB
 
 当前 C DDX 复用固定版本 XLibre VFB 的软件屏幕初始化和输入设备。X11 请求、资源、扩展、Pixmap 以及 Pixman 绘图都由真正的 XLibre 核心实现。屏幕限定为单个 depth-24、32-bpp、little-endian XRGB8888 framebuffer。
 
-Damage 记录在屏幕 Pixmap 上。8 毫秒定时器将受损矩形和实际 stride 传给 Rust。Rust 校验矩形、行跨度与内存范围，将 XRGB alpha 归一化为 255，并合并待呈现的 Damage。wgpu 只上传受损纹理区域，通过全屏三角形和纹理采样呈现；窗口大小变化目前缩放已有帧缓冲。
+Damage 记录在屏幕 Pixmap 上。8 毫秒定时器将受损矩形和实际 stride 传给 Rust。Rust 校验矩形、行跨度与内存范围，将 XRGB alpha 归一化为 255，并合并待呈现的 Damage。wgpu 只上传受损纹理区域，通过全屏三角形和纹理采样呈现；rootful 窗口大小变化目前缩放已有帧缓冲；rootless 则更新对应 X11 窗口的几何并重新分配 Composite Pixmap。
 
 内存上限：单帧缓冲 256 MiB，所有窗口总计 512 MiB、最多 1024 个窗口，单轴不超过 16384。显卡自身能力可能更低。Rust 的窗口模型维护 ID、父子关系、标题、可见性、焦点和递归销毁，默认 DDX 注册整个 X 屏幕；`--rootless` 则由 Composite 手动重定向根窗口的子窗口，将每个顶层窗口的独立 Pixmap 注册到 Rust 窗口模型。Damage 相对 Pixmap 的坐标经边框偏移校正后上传；嵌套子窗口保留在同一 Pixmap 中。窗口销毁和 Pixmap 重建会解除 Damage 跟踪，避免继续访问已释放的服务器对象。
+
+## 窗口管理
+
+Rust 内部 X11 连接同时驱动 Selection 与 WM_S0/SubstructureRedirect，避免两套事件消费者。处理 MapRequest、ConfigureRequest、常用 EWMH ClientMessage，维护客户端列表、堆叠顺序和活动窗口。DDX 将 ICCCM 尺寸约束、瞬态关系、坐标及窗口状态以固定 64 字节结构同步到 Rust；原生 MOVE/RESIZE/STATE 回到 C 的服务器线程执行。新建窗口保持隐藏，直到显式映射，避免未完成初始化的根桌面被呈现。
+
+原生关闭先发送 WM_DELETE_WINDOW；未声明协议时终止该 X11 客户端。鼠标点击提升并聚焦普通窗口，hover 不改变层级。override-redirect 保留弹出行为。Linux X11 宿主验证了双向几何与瞬态父窗口关系；Wayland 全局定位受协议限制，macOS/Wayland 的原生 owner 关系仍需专用实现及原生验证。ABI v2 拒绝旧版本插件，升级必须重建核心。
 
 ## 输入
 

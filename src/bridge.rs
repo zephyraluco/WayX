@@ -1,4 +1,4 @@
-//! C ABI v1. Callers own pointers and must keep buffers valid for each call.
+//! C ABI v2. Callers own pointers and must keep buffers valid for each call.
 //! The handle may be shared across threads; freeing it requires all calls to stop.
 use crate::backend::{Backend, InputEvent, Rect};
 use std::{
@@ -6,7 +6,7 @@ use std::{
     sync::{Arc, Mutex},
 };
 
-pub const ABI_VERSION: u32 = 1;
+pub const ABI_VERSION: u32 = 2;
 pub type SharedBackend = Arc<Mutex<Backend>>;
 pub struct Handle(pub SharedBackend);
 
@@ -217,6 +217,55 @@ pub unsafe extern "C" fn wayx_clipboard_get(
         })
     }
 }
+/// # Safety
+/// Handle must be live; state points to a readable WindowState for the call.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn wayx_window_state(
+    handle: *mut Handle,
+    id: u32,
+    state: *const crate::window::WindowState,
+) -> i32 {
+    unsafe {
+        access(handle, |backend| {
+            let state = state.as_ref().ok_or(())?;
+            state.validate().map_err(|_| ())?;
+            if state.transient_for == id {
+                return Err(());
+            }
+            backend.windows.get_mut(&id).ok_or(())?.state = *state;
+            Ok(())
+        })
+    }
+}
+/// # Safety
+/// Handle is live; width and height point to distinct writable u32 values.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn wayx_window_constrain(
+    handle: *mut Handle,
+    id: u32,
+    width: *mut u32,
+    height: *mut u32,
+) -> i32 {
+    unsafe {
+        access(handle, |backend| {
+            if width == height {
+                return Err(());
+            }
+            let (Some(width), Some(height)) = (width.as_mut(), height.as_mut()) else {
+                return Err(());
+            };
+            let size = backend
+                .windows
+                .get(&id)
+                .ok_or(())?
+                .state
+                .constrain(*width, *height);
+            *width = size.0;
+            *height = size.1;
+            Ok(())
+        })
+    }
+}
 #[repr(C)]
 pub struct Api {
     pub abi_version: u32,
@@ -231,6 +280,9 @@ pub struct Api {
     pub input_poll: unsafe extern "C" fn(*mut Handle, *mut InputEvent) -> i32,
     pub clipboard_set: unsafe extern "C" fn(*mut Handle, *const u8, usize) -> i32,
     pub clipboard_get: unsafe extern "C" fn(*mut Handle, *mut u8, usize, *mut usize) -> i32,
+    pub window_state:
+        unsafe extern "C" fn(*mut Handle, u32, *const crate::window::WindowState) -> i32,
+    pub window_constrain: unsafe extern "C" fn(*mut Handle, u32, *mut u32, *mut u32) -> i32,
 }
 pub static API: Api = Api {
     abi_version: ABI_VERSION,
@@ -244,6 +296,8 @@ pub static API: Api = Api {
     input_poll: wayx_input_poll,
     clipboard_set: wayx_clipboard_set,
     clipboard_get: wayx_clipboard_get,
+    window_state: wayx_window_state,
+    window_constrain: wayx_window_constrain,
 };
 #[unsafe(no_mangle)]
 pub extern "C" fn wayx_get_api() -> *const Api {

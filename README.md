@@ -4,7 +4,7 @@
 
 当前版本支持 Linux 上的 **rootful / rootless 显示**：远端 X11 应用通过 SSH 标准 X11 forwarding 接入本地 XLibre；XLibre FB/Pixman 生成的软件帧缓冲经 Damage 上传到 Rust，最终由 wgpu 呈现在 winit 原生窗口中。
 
-**不是完整的跨平台 X Server 发行版。** Rust 显示后端面向 Win32 / AppKit / Linux Wayland、X11；XLibre DDX 当前只在 Linux 构建和运行验证。已支持逐 X11 顶层窗口的 rootless 映射；完整窗口管理、IME/XIM 和 Windows/macOS 的 XLibre 集成仍在推进。Linux 使用 Wayland 作为本地窗口系统，不等于支持远端原生 Wayland 协议转发。
+**不是完整的跨平台 X Server 发行版。** Rust 显示后端面向 Win32 / AppKit / Linux Wayland、X11；XLibre DDX 当前只在 Linux 构建和运行验证。已支持逐 X11 顶层窗口的 rootless 映射；Linux X11 窗口管理已接入；IME/XIM 和 Windows/macOS 的 XLibre 集成仍在推进。Linux 使用 Wayland 作为本地窗口系统，不等于支持远端原生 Wayland 协议转发。
 
 ## 工程结构
 
@@ -111,7 +111,9 @@ cargo run --locked -- serve --rootless --core build/xlibre/hw/wayx/libwayx-xserv
 
 顶层窗口使用 XLibre Composite 的独立 Pixmap，因此互相遮挡也能保留正确像素；嵌套子窗口合成到所属顶层窗口。支持标题更新、映射/隐藏、窗口销毁和客户端尺寸变化；根桌面保持隐藏。每个原生窗口的键鼠输入按对应的 X11 窗口路由。
 
-当前仍限定软件 32-bpp XRGB 显示，尚未完成透明窗口、弹出窗口装饰策略及完整 ICCCM/EWMH 窗口管理。不要同时在 rootless 显示中启动另一个 Composite 管理器。
+rootless 内置窗口管理器取得 `WM_S0` 和 SubstructureRedirect，处理 map/configure、激活、层级、关闭及常用 EWMH 状态请求；不要同时运行其他 X11/Composite 窗口管理器。移动和缩放双向同步，`WM_NORMAL_HINTS` 约束尺寸，关闭优先通知 `WM_DELETE_WINDOW`，不支持该协议的应用使用 XKillClient 语义（同一客户端的其他窗口也会关闭）。override-redirect 弹出窗口无装饰且不主动获取焦点；X11 宿主建立原生 WM_TRANSIENT_FOR 关系。
+
+当前仍限定软件 32-bpp XRGB 显示，不支持透明 ARGB。窗口管理已在 Linux X11 宿主实际运行验证；Wayland 限制应用控制全局窗口位置，winit 也未提供通用的 Wayland/macOS 瞬态父窗口接口，这些平台行为尚未验收。C ABI 已升级至 **v2**，旧插件必须重新编译；新建窗口先隐藏，再由 DDX 显式 map。
 
 ## SSH X11 forwarding
 
@@ -141,6 +143,8 @@ WAYX_TEST_CORE=$PWD/build/xlibre/hw/wayx/libwayx-xserver.so \
   cargo test --locked --test xlibre -- --ignored --nocapture
 WAYX_TEST_CORE=$PWD/build/xlibre/hw/wayx/libwayx-xserver.so \
   cargo test --locked --test rootless -- --ignored --nocapture
+WAYX_TEST_CORE=$PWD/build/xlibre/hw/wayx/libwayx-xserver.so \
+  cargo test --locked --test window_manager -- --ignored --nocapture
 cargo run --locked -- gpu-smoke
 ```
 

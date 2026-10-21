@@ -3719,6 +3719,7 @@ dependencies = [
  "rand 0.8.8",
  "russh",
  "tempfile",
+ "thiserror 2.0.21",
  "tokio",
  "tracing",
  "tracing-subscriber",

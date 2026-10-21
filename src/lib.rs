@@ -10,3 +10,8 @@ pub mod ssh;
 pub mod selection;
 
 pub mod auth;
+
+pub mod window;
+
+#[cfg(feature = "desktop")]
+pub mod wm;

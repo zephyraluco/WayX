@@ -6,9 +6,17 @@ int main(void) {
     assert(api->abi_version==WAYX_ABI_VERSION);
     assert(api->struct_size==sizeof(*api));
     assert(sizeof(WayxInputEvent)==64);
+    assert(sizeof(WayxWindowState)==64);
     WayxBackend *b=wayx_backend_new();
     assert(api->window_create(b,1,0,4,3)==0);
     assert(api->window_create(b,1,0,4,3)<0);
+    WayxWindowState state={0};state.min_width=20;state.min_height=10;state.width_inc=8;
+    assert(api->window_state(b,1,&state)==0);
+    uint32_t width=31,height=3;
+    assert(api->window_constrain(b,1,&width,&height)==0 && width==24 && height==10);
+    assert(api->window_constrain(b,1,&width,&width)<0);
+    state.max_width=1;
+    assert(api->window_state(b,1,&state)<0);
     uint8_t pixels[16]={0,0,255,0, 0,255,0,0, 255,0,0,0, 255,255,255,0};
     assert(api->frame_damage(b,1,1,1,2,2,8,pixels,sizeof pixels)==0);
     assert(api->frame_damage(b,1,3,2,2,2,8,pixels,sizeof pixels)<0);

@@ -1,3 +1,5 @@
+#[cfg(feature = "desktop")]
+use anyhow::Context;
 use anyhow::Result;
 use clap::{Parser, Subcommand};
 #[cfg(any(feature = "desktop", feature = "ssh"))]
@@ -79,6 +81,7 @@ fn main() -> Result<()> {
         Command::Demo { frames } => {
             let mut b = wayx::backend::Backend::default();
             b.create(1, 0, 800, 500)?;
+            b.windows.get_mut(&1).context("Demo window missing")?.mapped = true;
             let mut pixels = vec![0u8; 800 * 500 * 4];
             for y in 0..500 {
                 for x in 0..800 {
@@ -101,6 +104,7 @@ fn main() -> Result<()> {
             wayx::desktop::run(
                 std::sync::Arc::new(std::sync::Mutex::new(b)),
                 true,
+                false,
                 None,
                 None,
                 frames,
@@ -156,7 +160,14 @@ fn main() -> Result<()> {
                 let mut handle = wayx::bridge::Handle(shared);
                 Ok(unsafe { run(&wayx::bridge::API, &mut handle, argc, pointers.as_mut_ptr()) })
             });
-            wayx::desktop::run(backend, false, Some(worker), selection_config, frames)?;
+            wayx::desktop::run(
+                backend,
+                false,
+                rootless,
+                Some(worker),
+                selection_config,
+                frames,
+            )?;
         }
         #[cfg(feature = "ssh")]
         Command::Ssh {
