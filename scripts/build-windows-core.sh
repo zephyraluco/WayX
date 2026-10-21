@@ -39,6 +39,10 @@ if new not in text:
     path.write_text(text.replace(old, new, 1))
 PY_PROTOCOLS
 build_dependency protocols "$protocols" -Dlegacy=true
+# vcpkg's MSVC libxkbfile DLL exports data but omits the compiler functions.
+# Build the fixed source with MinGW so its import library exports the full API.
+xkbfile="$(fetch https://www.x.org/releases/individual/lib/libxkbfile-1.2.0.tar.xz 7f71884e5faf56fb0e823f3848599cf9b5a9afce51c90982baeb64f635233ebf libxkbfile-1.2.0)"
+build_dependency xkbfile "$xkbfile" --default-library=shared
 compiler="$(fetch https://www.x.org/releases/individual/app/xkbcomp-1.5.0.tar.xz 2ac31f26600776db6d9cd79b3fcd272263faebac7eb85fb2f33c7141b8486060 xkbcomp-1.5.0)"
 # Xwindows.h overwrites utils.h's ERROR alias with the Win32 numeric constant.
 # Call the existing diagnostic function directly in the affected translation unit.
