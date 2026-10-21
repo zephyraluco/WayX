@@ -175,3 +175,12 @@ cargo run --locked -- gpu-smoke
 本仓库自有代码使用 MIT。XLibre、Pixman 及其他依赖保留各自许可；XLibre 按文件包含不同许可，分发其源码或二进制时须单独遵守。构建脚本从上游获取代码，不将其声明为本仓库自有代码。
 
 后续功能按 [实施进度](docs/progress.md) 逐项完成验证并独立提交。
+
+### CI 构建产物下载
+
+每次推送都会构建 Windows、macOS、Linux 的 release 客户端，并运行 XLibre
+核心验证。成功构建的客户端、Linux 核心和通过验证的 macOS/Windows 核心运行包
+可在对应 [Actions 运行记录](https://github.com/zephyraluco/WayX/actions) 的
+Artifacts 区域下载，保留 **7 天**；名称包含平台、架构（客户端）和完整提交 SHA。
+客户端单独下载包不包含 XLibre 及其运行依赖；核心运行包仍为实验性发行。
+构建或验证失败的平台不会发布成功产物，具体以对应任务结果为准。

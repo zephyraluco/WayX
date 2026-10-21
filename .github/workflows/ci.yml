@@ -2,9 +2,6 @@ name: WayX
 on: [push, pull_request]
 permissions:
   contents: read
-concurrency:
-  group: rust-${{ github.ref }}
-  cancel-in-progress: true
 jobs:
   rust:
     strategy:
@@ -24,6 +21,17 @@ jobs:
       - run: cargo clippy --locked --all-targets --all-features -- -D warnings
       - run: cargo test --locked --all-targets
       - run: cargo test --locked --no-default-features --lib
+      - name: Build final client
+        run: cargo build --locked --release
+      - uses: actions/upload-artifact@v4
+        with:
+          name: wayx-${{ runner.os }}-${{ runner.arch }}-${{ github.sha }}
+          path: |
+            target/release/wayx
+            target/release/wayx.exe
+            LICENSE
+          if-no-files-found: error
+          retention-days: 7
   xlibre:
     runs-on: ubuntu-latest
     container: debian:trixie
@@ -57,3 +65,11 @@ jobs:
         env:
           WGPU_BACKEND: vulkan
         run: python3 scripts/test-native.py --core build/xlibre/hw/wayx/libwayx-xserver.so
+      - uses: actions/upload-artifact@v4
+        with:
+          name: xlibre-Linux-${{ runner.arch }}-${{ github.sha }}
+          path: |
+            build/xlibre/hw/wayx/libwayx-xserver.so
+            LICENSE
+          if-no-files-found: error
+          retention-days: 7

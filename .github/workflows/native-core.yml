@@ -1,49 +1,7 @@
 name: Native XLibre core
-on:
-  workflow_dispatch:
-  push:
-    paths:
-      - "ddx/**"
-      - "include/**"
-      - "scripts/**"
-      - "Cargo.toml"
-      - "Cargo.lock"
-      - "src/auth.rs"
-      - "src/backend.rs"
-      - "src/bridge.rs"
-      - "src/desktop.rs"
-      - "src/lib.rs"
-      - "src/main.rs"
-      - "src/selection.rs"
-      - "src/window.rs"
-      - "src/wm.rs"
-      - "tests/xlibre.rs"
-      - "tests/rootless.rs"
-      - "tests/window_manager.rs"
-  pull_request:
-    paths:
-      - "ddx/**"
-      - "include/**"
-      - "scripts/**"
-      - "Cargo.toml"
-      - "Cargo.lock"
-      - "src/auth.rs"
-      - "src/backend.rs"
-      - "src/bridge.rs"
-      - "src/desktop.rs"
-      - "src/lib.rs"
-      - "src/main.rs"
-      - "src/selection.rs"
-      - "src/window.rs"
-      - "src/wm.rs"
-      - "tests/xlibre.rs"
-      - "tests/rootless.rs"
-      - "tests/window_manager.rs"
+on: [push, pull_request, workflow_dispatch]
 permissions:
   contents: read
-concurrency:
-  group: native-core-${{ github.ref }}
-  cancel-in-progress: false
 jobs:
   macos-core:
     runs-on: macos-latest
@@ -71,8 +29,10 @@ jobs:
           build/relocated-runtime/wayx.sh --frames 3 -- :196 -screen 0 640x480x24 -crtcs 1@640x480 -nolisten tcp -ac
       - uses: actions/upload-artifact@v4
         with:
-          name: macos-core-runtime
+          name: macos-core-runtime-${{ github.sha }}
           path: build/relocated-runtime
+          if-no-files-found: error
+          retention-days: 7
   windows-core:
     runs-on: windows-2022
     timeout-minutes: 60
@@ -154,5 +114,7 @@ jobs:
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - uses: actions/upload-artifact@v4
         with:
-          name: windows-core-runtime
+          name: windows-core-runtime-${{ github.sha }}
           path: build/relocated-runtime
+          if-no-files-found: error
+          retention-days: 7
