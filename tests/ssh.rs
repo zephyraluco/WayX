@@ -181,7 +181,18 @@ fn loopback_roundtrip() -> Result<()> {
             .context("SSH client session")?;
             ensure!(status == 0, "Remote command failed");
             destination.await?.context("Local X11 destination")?;
-            remote.await?.context("SSH server session teardown")?;
+            // All application bytes, cookie substitution and exit status were
+            // verified above. TCP may reset on peer teardown when SSH channel
+            // bookkeeping is still in flight (observed on Windows and macOS).
+            if let Err(error) = remote.await?
+                && !error.chain().any(|cause| {
+                    cause
+                        .downcast_ref::<std::io::Error>()
+                        .is_some_and(|error| error.kind() == std::io::ErrorKind::ConnectionReset)
+                })
+            {
+                return Err(error.context("SSH server session teardown"));
+            }
             Ok::<_, anyhow::Error>(())
         })
         .await??;
