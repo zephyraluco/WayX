@@ -27,6 +27,7 @@
 - 新增 `window_manager` 显式集成测试：真实 XLibre MapRequest/ConfigureRequest、第二管理器拒绝、客户端列表、焦点、尺寸增量约束、瞬态与弹出标记、EWMH 状态及 WM_DELETE_WINDOW 协商。
 - 原生 X11 测试实际观察宿主窗口：两个独立窗口、双向移动/缩放、WM_TRANSIENT_FOR，以及应用收到关闭通知后自行销毁。
 - Rust fmt、Clippy、全特性测试、C ABI v2 布局/回调，以及原有 rootful/rootless 绘制输入和文本/INCR 回归通过。
+- 最小化的原生 `0×0` 事件只同步状态，不修改 X11 帧缓冲；恢复尺寸及 IconicState 回归通过。
 - C ABI v2 创建窗口先隐藏，插件需重建。Wayland 全局位置控制受协议限制；Wayland/macOS 原生瞬态关系不计为已完成，Windows/macOS 核心仍属第三项。
 
 
@@ -39,3 +40,7 @@
 - 第三项没有通过两个平台的核心/GUI 验收，因此尚未开始第四项 IME/XIM。
 
 - 核心运行包补充依赖解析、原生动态库与 XKB 数据收集、许可证、启动脚本；macOS 重写加载路径并 ad-hoc 签名，Windows 收集 PE 依赖。CI 需移动包目录后重新启动；Windows 还隐藏原始依赖目录，避免构建机路径掩盖缺包。运行包不是第九项的正式安装器/可信发行签名。
+
+## 验证中发现的回归
+
+Windows 常规 CI 暴露 SSH 关闭的 TCP reset；已等待 russh 传输任务结束，并对完整加密会话连续执行十轮。新增阶段诊断确认 reset 发生在测试服务端收尾、数据及退出码已验证之后；仅允许这一阶段的 ConnectionReset，其余错误继续失败。本地验证通过，新的 Windows/macOS 原生 Rust 回归尚待 CI 完成。此项属于验证修复，不代表第七项 SSH 使用体验已完成。

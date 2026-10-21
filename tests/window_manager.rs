@@ -237,6 +237,36 @@ fn window_management_should_route_requests_hints_states_and_cooperative_close() 
                 && flags & window::FULLSCREEN == 0
                 && flags & window::ABOVE != 0)
         })?;
+        backend.lock().unwrap().push_input(InputEvent {
+            kind: event::STATE,
+            window: a,
+            flags: window::MINIMIZED,
+            ..Default::default()
+        })?;
+        pump(&mut wm, || {
+            Ok(backend.lock().unwrap().windows[&a].state.flags & window::MINIMIZED != 0)
+        })?;
+        let geometry = conn.get_geometry(a)?.reply()?;
+        ensure!(
+            (geometry.width, geometry.height) == (128, 110),
+            "Minimizing changed restore geometry"
+        );
+        let wm_state = atom("WM_STATE")?;
+        ensure!(
+            conn.get_property(false, a, wm_state, wm_state, 0, 2)?
+                .reply()?
+                .value32()
+                .is_some_and(|mut values| values.next() == Some(3)),
+            "Application did not observe IconicState"
+        );
+        backend.lock().unwrap().push_input(InputEvent {
+            kind: event::STATE,
+            window: a,
+            ..Default::default()
+        })?;
+        pump(&mut wm, || {
+            Ok(backend.lock().unwrap().windows[&a].state.flags & window::MINIMIZED == 0)
+        })?;
         let active = atom("_NET_ACTIVE_WINDOW")?;
         conn.send_event(
             false,

@@ -498,6 +498,31 @@ impl Native {
         Ok(true)
     }
 }
+// A minimized native window can report 0x0. Forward its state without replacing
+// the X11 application's framebuffer or its restore geometry with a 1x1 image.
+fn resize_input(id: u32, state: &WindowState, width: u32, height: u32, flags: u32) -> InputEvent {
+    if width == 0 || height == 0 {
+        return InputEvent {
+            kind: event::STATE,
+            window: id,
+            flags,
+            ..Default::default()
+        };
+    }
+    let (width, height) = if state.flags & window_state::ROOTLESS != 0 {
+        state.constrain(width, height)
+    } else {
+        (width, height)
+    };
+    InputEvent {
+        kind: event::RESIZE,
+        window: id,
+        flags,
+        x: f64::from(width),
+        y: f64::from(height),
+        ..Default::default()
+    }
+}
 struct App {
     backend: SharedBackend,
     native: HashMap<WindowId, Native>,
@@ -704,19 +729,17 @@ impl ApplicationHandler for App {
             }
             WindowEvent::Resized(size) => {
                 native.resize_surface(size.width, size.height);
-                input.kind = event::RESIZE;
-                let state = native.applied_state.unwrap_or_default();
-                let (width, height) = if state.flags & window_state::ROOTLESS != 0 {
-                    state.constrain(size.width, size.height)
-                } else {
-                    (size.width, size.height)
-                };
-                input.x = width as f64;
-                input.y = height as f64;
-                input.flags = (u32::from(native.window.is_maximized()) * window_state::MAXIMIZED)
+                let flags = (u32::from(native.window.is_maximized()) * window_state::MAXIMIZED)
                     | (u32::from(native.window.is_minimized().unwrap_or(false))
                         * window_state::MINIMIZED)
                     | (u32::from(native.window.fullscreen().is_some()) * window_state::FULLSCREEN);
+                input = resize_input(
+                    id,
+                    &native.applied_state.unwrap_or_default(),
+                    size.width,
+                    size.height,
+                    flags,
+                );
             }
             WindowEvent::Moved(position) => {
                 input.kind = event::MOVE;
@@ -1067,4 +1090,34 @@ pub async fn gpu_smoke() -> Result<()> {
     );
     tracing::info!("GPU texture upload, shader composition and readback passed");
     Ok(())
+}
+
+#[cfg(test)]
+mod geometry_tests {
+    use super::*;
+    #[test]
+    fn minimizing_should_report_state_without_resizing_the_x11_framebuffer() {
+        let state = WindowState {
+            flags: window_state::ROOTLESS,
+            min_width: 80,
+            min_height: 40,
+            ..Default::default()
+        };
+        let minimized = resize_input(42, &state, 0, 0, window_state::MINIMIZED);
+        assert_eq!(
+            (
+                minimized.kind,
+                minimized.window,
+                minimized.flags,
+                minimized.x,
+                minimized.y
+            ),
+            (event::STATE, 42, window_state::MINIMIZED, 0.0, 0.0)
+        );
+        let restored = resize_input(42, &state, 640, 480, 0);
+        assert_eq!(
+            (restored.kind, restored.x, restored.y),
+            (event::RESIZE, 640.0, 480.0)
+        );
+    }
 }
