@@ -133,12 +133,13 @@ exec "$runtime/bin/{client.name}" serve --core "$runtime/lib/{core.name}" "$@"
 ''')
     launcher.chmod(0o755)
 else:
-    (out / "wayx.ps1").write_text(f'''$ErrorActionPreference = 'Stop'
-$env:WAYX_XKB_DIR = "$PSScriptRoot/share/X11/xkb"
-$env:WAYX_XKB_BIN_DIR = "$PSScriptRoot/bin"
-$env:PATH = "$PSScriptRoot/bin;" + $env:PATH
-& "$PSScriptRoot/bin/{client.name}" serve --core "$PSScriptRoot/bin/{core.name}" @args
-exit $LASTEXITCODE
+    (out / "wayx.cmd").write_text(f'''@echo off
+setlocal
+set "WAYX_XKB_DIR=%~dp0share\\X11\\xkb"
+set "WAYX_XKB_BIN_DIR=%~dp0bin"
+set "PATH=%~dp0bin;%PATH%"
+"%~dp0bin\\{client.name}" serve --core "%~dp0bin\\{core.name}" %*
+exit /b %ERRORLEVEL%
 ''')
 licenses = out / "licenses"
 licenses.mkdir()

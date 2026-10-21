@@ -41,6 +41,9 @@ on:
       - "tests/window_manager.rs"
 permissions:
   contents: read
+concurrency:
+  group: native-core-${{ github.ref }}
+  cancel-in-progress: false
 jobs:
   macos-core:
     runs-on: macos-latest
@@ -72,7 +75,9 @@ jobs:
           path: build/relocated-runtime
   windows-core:
     runs-on: windows-2022
-    timeout-minutes: 45
+    timeout-minutes: 60
+    env:
+      VCPKG_DEFAULT_BINARY_CACHE: ${{ github.workspace }}/build/vcpkg-binary-cache
     steps:
       - uses: actions/checkout@v4
       - uses: actions/checkout@v4
@@ -83,13 +88,28 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       - uses: ilammy/msvc-dev-cmd@v1
+      - uses: actions/cache/restore@v4
+        id: native-dependency-cache
+        with:
+          path: build/vcpkg-binary-cache
+          key: native-windows-a2f9862-${{ hashFiles('scripts/windows/vcpkg.json') }}-${{ github.run_id }}-${{ github.run_attempt }}
+          restore-keys: |
+            native-windows-a2f9862-${{ hashFiles('scripts/windows/vcpkg.json') }}-
       - name: Build pinned Windows X11 C dependencies
+        timeout-minutes: 35
         shell: pwsh
         run: |
+          New-Item -ItemType Directory -Force $env:VCPKG_DEFAULT_BINARY_CACHE | Out-Null
           build/vcpkg/bootstrap-vcpkg.bat -disableMetrics
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           build/vcpkg/vcpkg.exe install --triplet x64-windows --x-manifest-root=scripts/windows --x-install-root=build/windows-installed
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - uses: actions/cache/save@v4
+        continue-on-error: true
+        if: always() && !cancelled()
+        with:
+          path: build/vcpkg-binary-cache
+          key: ${{ steps.native-dependency-cache.outputs.cache-primary-key }}
       - uses: msys2/setup-msys2@v2
         with:
           msystem: UCRT64
@@ -130,7 +150,7 @@ jobs:
           Move-Item build/core-runtime build/relocated-runtime
           Move-Item build/windows-installed build/windows-installed-disabled
           Move-Item build/windows-native build/windows-native-disabled
-          & build/relocated-runtime/wayx.ps1 --frames 3 -- :196 -screen 0 640x480x24 -crtcs 1@640x480 -listen tcp -ac
+          & build/relocated-runtime/wayx.cmd --frames 3 -- :196 -screen 0 640x480x24 -crtcs 1@640x480 -listen tcp -ac
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - uses: actions/upload-artifact@v4
         with:
