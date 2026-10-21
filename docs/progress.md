@@ -37,3 +37,5 @@
 - macOS 原生 XLibre 构建、真实 X11 协议测试、AppKit/Metal 呈现和动态库归档 CI 已通过（run 39611199753、39611787101）。
 - Windows 测试连接调整为回环 TCP；仅 Rust desktop 跨目标静态检查通过，不代表 XLibre DLL 可用。MSYS2 包目录缺少原生 xfont2、libxkbfile、xkbcomp、xtrans 等必需依赖；现使用固定版本 vcpkg 提供 C 依赖，并以校验 SHA-256 的源包补齐新版协议头、XKB 编译器和数据。新增 Windows 原生构建/协议/Win32 呈现 CI，必须以实际执行结果验收。
 - 第三项没有通过两个平台的核心/GUI 验收，因此尚未开始第四项 IME/XIM。
+
+- 核心运行包补充依赖解析、原生动态库与 XKB 数据收集、许可证、启动脚本；macOS 重写加载路径并 ad-hoc 签名，Windows 收集 PE 依赖。CI 需移动包目录后重新启动；Windows 还隐藏原始依赖目录，避免构建机路径掩盖缺包。运行包不是第九项的正式安装器/可信发行签名。

@@ -22,10 +22,15 @@ jobs:
         run: |
           cargo build --locked
           target/debug/wayx serve --core "$(cat build/xlibre/wayx-core-path.txt)" --frames 3 -- :196 -screen 0 640x480x24 -crtcs 1@640x480 -nolisten tcp -ac
+      - name: Stage and exercise relocated core runtime
+        run: |
+          python3 scripts/bundle-core.py --core "$(cat build/xlibre/wayx-core-path.txt)" --client target/debug/wayx --compiler "$(command -v xkbcomp)" --xkb-dir "$(pkg-config --variable=xkbconfigdir xkbcomp)" --license-dir build/xlibre-source --output build/core-runtime
+          mv build/core-runtime build/relocated-runtime
+          build/relocated-runtime/wayx.sh --frames 3 -- :196 -screen 0 640x480x24 -crtcs 1@640x480 -nolisten tcp -ac
       - uses: actions/upload-artifact@v4
         with:
-          name: macos-core
-          path: build/xlibre/hw/wayx/*.dylib
+          name: macos-core-runtime
+          path: build/relocated-runtime
   windows-core:
     runs-on: windows-2022
     timeout-minutes: 45
@@ -76,7 +81,19 @@ jobs:
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           target/debug/wayx.exe serve --core $env:WAYX_TEST_CORE --frames 3 -- :196 -screen 0 640x480x24 -crtcs 1@640x480 -listen tcp -ac
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Stage and exercise relocated core runtime
+        shell: pwsh
+        run: |
+          $env:PATH = "C:/msys64/ucrt64/bin;" + $env:PATH
+          $core = (Get-Content build/xlibre/wayx-core-path.txt).Trim()
+          python scripts/bundle-core.py --core $core --client target/debug/wayx.exe --compiler build/windows-native/bin/xkbcomp.exe --xkb-dir build/windows-native/share/xkeyboard-config-2 --search-dir build/windows-installed/x64-windows/bin --search-dir C:/msys64/ucrt64/bin --license-dir build/xlibre-source --license-dir build/windows-installed/x64-windows/share --license-dir build/native-sources --output build/core-runtime
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          Move-Item build/core-runtime build/relocated-runtime
+          Move-Item build/windows-installed build/windows-installed-disabled
+          Move-Item build/windows-native build/windows-native-disabled
+          & build/relocated-runtime/wayx.ps1 --frames 3 -- :196 -screen 0 640x480x24 -crtcs 1@640x480 -listen tcp -ac
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - uses: actions/upload-artifact@v4
         with:
-          name: windows-core
-          path: build/xlibre/hw/wayx/*.dll
+          name: windows-core-runtime
+          path: build/relocated-runtime
