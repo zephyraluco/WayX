@@ -207,7 +207,12 @@ fn peer_reset_after_completion(error: &anyhow::Error) -> bool {
                 _ => None,
             }
         });
-        io.is_some_and(|error| error.kind() == std::io::ErrorKind::ConnectionReset)
+        io.is_some_and(|error| {
+            matches!(
+                error.kind(),
+                std::io::ErrorKind::ConnectionReset | std::io::ErrorKind::ConnectionAborted
+            )
+        })
     })
 }
 #[test]
@@ -216,6 +221,8 @@ fn teardown_should_accept_typed_peer_reset_but_reject_truncated_data() {
     assert!(peer_reset_after_completion(
         &anyhow::Error::new(reset).context("server teardown")
     ));
+    let aborted = russh::Error::IO(std::io::Error::from(std::io::ErrorKind::ConnectionAborted));
+    assert!(peer_reset_after_completion(&aborted.into()));
     let truncated = russh::Error::IO(std::io::Error::from(std::io::ErrorKind::UnexpectedEof));
     assert!(!peer_reset_after_completion(&truncated.into()));
 }
