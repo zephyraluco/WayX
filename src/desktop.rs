@@ -9,7 +9,9 @@ use std::{
     sync::Arc,
     time::{Duration, Instant},
 };
-use winit::raw_window_handle::{HasWindowHandle, RawWindowHandle};
+use winit::raw_window_handle::HasWindowHandle;
+#[cfg(any(windows, all(unix, not(target_os = "macos"))))]
+use winit::raw_window_handle::RawWindowHandle;
 use winit::{
     application::ApplicationHandler,
     event::{ElementState, Ime, MouseButton, MouseScrollDelta, WindowEvent},
@@ -422,7 +424,9 @@ impl Native {
     }
     fn x11_id(&self) -> Result<Option<u32>> {
         Ok(match self.window.window_handle()?.as_raw() {
+            #[cfg(all(unix, not(target_os = "macos")))]
             RawWindowHandle::Xlib(handle) => Some(u32::try_from(handle.window)?),
+            #[cfg(all(unix, not(target_os = "macos")))]
             RawWindowHandle::Xcb(handle) => Some(handle.window.get()),
             _ => None,
         })
