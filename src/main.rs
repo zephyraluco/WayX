@@ -136,9 +136,11 @@ fn main() -> Result<()> {
             };
             let shared = backend.clone();
             let worker = std::thread::spawn(move || -> Result<i32> {
-                // The library stays loaded until dix_main returns; argv storage and handle
-                // also outlive every callback. Plugins are trusted native executable code.
-                let library = unsafe { libloading::Library::new(core) }?;
+                // XLibre installs process-wide signal handlers that can outlive dix_main.
+                // Pin the trusted native plugin until process exit; argv and the handle
+                // still outlive every server callback on this worker.
+                let library =
+                    std::mem::ManuallyDrop::new(unsafe { libloading::Library::new(core) }?);
                 let run = unsafe {
                     library.get::<unsafe extern "C" fn(
                         *const wayx::bridge::Api,

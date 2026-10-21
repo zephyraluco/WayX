@@ -43,7 +43,7 @@
 
 ## 验证中发现的回归
 
-Windows 常规 CI 暴露 SSH 关闭的 TCP reset；已等待 russh 传输任务结束，并对完整加密会话连续执行十轮。新增阶段诊断确认 reset 发生在测试服务端收尾、数据及退出码已验证之后；仅允许这一阶段的 ConnectionReset，其余错误继续失败。本地验证通过，新的 Windows/macOS 原生 Rust 回归尚待 CI 完成。此项属于验证修复，不代表第七项 SSH 使用体验已完成。
+Windows 常规 CI 暴露 SSH 关闭的 TCP reset；已等待 russh 传输任务结束，并对完整加密会话连续执行十轮。新增阶段诊断确认 reset 发生在测试服务端收尾、数据及退出码已验证之后；仅允许这一阶段的 ConnectionReset，其余错误继续失败。既有修复在三平台 CI 通过；后续 Windows 又出现相同收尾阶段的 ConnectionAborted（10053），现将这一类型也限定在完整会话验证之后接受，新的 Windows CI 待完成。此项属于验证修复，不代表第七项 SSH 使用体验已完成。
 
 - CI 下载策略：每次推送均运行三平台客户端及原生核心工作流，不再取消旧提交的
   构建或按文件路径跳过核心构建。release 客户端、Linux 核心以及验证通过的
@@ -52,3 +52,12 @@ Windows 常规 CI 暴露 SSH 关闭的 TCP reset；已等待 russh 传输任务�
   编译失败定位为 Windows `ERROR` 常量覆盖诊断宏，已针对固定源包修正；完整
   Windows 验收仍待后续 CI。原生运行包客户端改用 release 构建，macOS 包使用
   tar.gz 保留可执行权限；Windows 使用 MSYS2 action 输出的实际路径寻找依赖。
+
+- release 模式实际窗口验证暴露核心卸载后的信号处理器悬空：调试栈定位到
+  `dlclose`。嵌入模式禁用进程级调度定时器，客户端将核心库固定至进程退出；
+  release rootful/rootless 原生渲染、两个独立窗口和退出连续三次通过。
+- Windows xkbcomp 编译及链接已通过（run 39652177310）；现在进入 XLibre
+  核心编译。已为固定版本源码中的指针转换补充 LLP64 `intptr_t` 修正，补丁
+  可重复应用并经 Linux 真实核心编译及协议回归，Windows 完整验收仍待 CI。
+- 本轮本地 fmt、Clippy、全特性测试、三项显式真实 XLibre 集成测试及 C ABI
+  检查通过。Linux CI 的原生窗口检查改为执行最终 release 二进制。

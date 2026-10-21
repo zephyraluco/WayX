@@ -39,7 +39,10 @@ args+=("-Dxkb_output_dir=$xkb_output")
 [[ -z "${WAYX_XKB_BIN_DIR:-}" ]] || args+=("-Dxkb_bin_dir=$WAYX_XKB_BIN_DIR")
 [[ -z "${WAYX_XKB_DIR:-}" ]] || args+=("-Dxkb_dir=$WAYX_XKB_DIR")
 case "$(uname -s)" in
-  MINGW*|MSYS*) args+=(-Dmitshm=false) ;;
+  MINGW*|MSYS*)
+    python3 "$project_root/scripts/patch-xlibre-windows.py" "$source_dir"
+    args+=(-Dmitshm=false)
+    ;;
 esac
 if [[ -f "$build_dir/build.ninja" ]]; then
   meson setup --reconfigure "$build_dir" "$source_dir" "${args[@]}"

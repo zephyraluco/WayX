@@ -29,6 +29,7 @@ extern DeviceIntPtr wayx_pointer, wayx_keyboard;
 extern int dix_main(int, char **, char **);
 /* Private XKB paths are pinned to the same XLibre revision as this DDX. */
 extern const char *XkbBaseDirectory, *XkbBinDirectory;
+extern Bool SmartScheduleSignalEnable;
 #include "wayx-rootless.h"
 
 int ddxProcessArgument(int argc,char **argv,int index) {
@@ -207,6 +208,9 @@ _X_EXPORT int wayx_xserver_run(const WayxApi *callbacks,WayxBackend *handle,int 
     if(base) XkbBaseDirectory=base;
     if(bin) XkbBinDirectory=bin;
     char *env[]={NULL};
+    /* The embedded server shares a process with the UI and GPU workers.
+     * Do not install a process-wide interval timer into this unloadable DDX. */
+    SmartScheduleSignalEnable=FALSE;
     int code=dix_main(argc,argv,env);
     XkbBaseDirectory=saved_base;XkbBinDirectory=saved_bin;
     free(base);free(bin);
