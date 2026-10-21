@@ -56,7 +56,7 @@ C ABI 提供 UTF-8 缓存读写；真实 X11 Selection 协议由 Rust 内部 X11
 
 SSH 会话和所有 X11 channel 使用 russh。只允许已记录的原始主机公钥；未知和变更密钥拒绝连接，不自动信任首次连接，也不绕过证书策略。每个会话产生新的随机 spoof cookie；每条 X11 channel 在连接本地 X Server 前验证 X11 setup 的字节序、协议版本、认证名称、长度和 cookie，再替换成本地 Xauthority 中的 cookie。
 
-本地真实 cookie 不经 SSH X11 forwarding 请求传给远端。Unix 系统优先本地 Unix socket，其他情况使用回环 TCP。默认示例不开放 X11 TCP；不使用 `xhost +` 或 `-ac` 作为用户启动方式。只有隔离的、禁用 TCP 的测试显示使用 `-ac`。
+本地真实 cookie 不经 SSH X11 forwarding 请求传给远端。Unix 系统优先本地 Unix socket，其他情况使用回环 TCP。默认示例不开放 X11 TCP；不使用 `xhost +` 或 `-ac` 作为用户启动方式。`-ac` 仅用于短时隔离的测试显示：Unix 测试禁用 TCP，Windows CI 使用 TCP 覆盖平台监听。用户启动使用 `-auth`。
 
 测试以本地临时密钥和真实加密 russh 会话执行，不需要外部服务器、用户密钥或虚构的远端认证。CLI 可通过命名的环境变量读取加密身份密钥的密码。未实现 SSH Agent、OpenSSH config、ProxyJump、连接 UI 或重连恢复。
 
@@ -64,12 +64,13 @@ SSH 会话和所有 X11 channel 使用 russh。只允许已记录的原始主机
 
 | 范围 | Linux | Windows | macOS |
 | --- | --- | --- | --- |
-| Rust 状态与 C ABI | 运行测试通过 | 已配置原生 CI，待运行 | 已配置原生 CI，待运行 |
-| Rust winit/wgpu 显示后端 | 原生 X11 surface 与 Vulkan 软件渲染已运行 | GNU 目标静态检查通过；未链接或运行 | Apple ARM64 目标静态检查通过；未链接或运行 |
-| XLibre 自定义 DDX | 固定提交构建、协议与输入测试通过 | 尚未移植/打包 | 尚未移植/打包 |
+| Rust 状态、认证和加密 SSH 回归 | 原生 CI 通过 | 原生 Rust CI 通过 | 原生 Rust CI 通过 |
+| C ABI 与核心回调 | C harness 与真实核心通过 | 等待 DLL 链接与运行验证 | 真实核心回调通过 |
+| Rust winit/wgpu 显示后端 | 原生 X11 surface 与 Vulkan 软件渲染已运行 | Rust 编译链接通过；Win32/DX12 呈现待验证 | AppKit 窗口与 Metal 呈现已运行 |
+| XLibre 自定义 DDX | 固定提交构建、协议与输入测试通过 | 32 个 C 依赖已构建，核心移植与包验证进行中 | 核心、协议与原生呈现通过，运行包待验收 |
 | 本地 Wayland surface | 已启用编译，当前环境无 compositor，未运行 | 不适用 | 不适用 |
 | 远端原生 Wayland 应用 | 不属于 SSH X11 forwarding 支持范围 | 同左 | 同左 |
 
-CI 配置并不等于已执行成功。完整跨平台发行需要分别解决 XLibre 的平台依赖、库打包、线程/信号行为和原生交互验证。此仓库交付的是可验证的 Linux rootful 实现与跨平台 Rust 显示层，不宣称这些后续工作已经完成。
+CI 配置并不等于已执行成功。完整跨平台发行需要分别解决 XLibre 的平台依赖、库打包、线程/信号行为和原生交互验证。Rust 三平台 CI 的通过记录为提交 c68b614；macOS 原生核心验证见 run 39611787101。Linux rootful/rootless 与窗口管理已运行验证；Windows 核心和各平台发行验收仍未完成。
 
 Rootless 集成测试额外覆盖完全遮挡下绘制、边框坐标、子窗口合成、独立输入、客户端 resize、unmap/remap 和窗口生命周期。原生测试通过宿主 X11 查询两个实际独立窗口，并关闭其中一个，确认另一个保留。
