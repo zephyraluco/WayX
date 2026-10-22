@@ -5,14 +5,14 @@ import sys
 
 root = Path(sys.argv[1])
 patches = {
-    "os/Xtranssock.c": [("#include <afunix.h>", "#include <afunix.h>\n#include <process.h>")],
+    "os/Xtranssock.c": [("#include <afunix.h>\n\n#undef EADDRINUSE", "#include <afunix.h>\n#include <process.h>\n\n#undef EADDRINUSE")],
     # The server transport uses no Xlib internals. Importing them after
     # Xwindows.h conflicts with its Status macro and leaks client-side types.
     "os/Xtransutil.c": [("#include <X11/Xlibint.h>\n", "/* Server transport does not require Xlib internals. */\n")],
     "dix/events.c": [("(WindowPtr) (long) focusID", "(WindowPtr) (intptr_t) focusID")],
     "dix/resource.c": [
         ("AddResource(%lx, %x, %lx)", "AddResource(%lx, %x, %p)"),
-        ("(unsigned long) value, client", "value, client"),
+        ("(unsigned long) id, type, (unsigned long) value, client", "(unsigned long) id, type, value, client"),
     ],
     "mi/miscrinit.c": [("(unsigned long *) (unsigned long) bias", "(void *) (uintptr_t) bias")],
     "include/miline.h": [("((unsigned long) (unsigned long*)", "((uintptr_t)")],
@@ -32,8 +32,10 @@ for filename, replacements in patches.items():
     path = root / filename
     text = path.read_text()
     for old, new in replacements:
-        # Some replacements are substrings of the old expression. Check the old
-        # expression first so a partial match cannot conceal an unapplied fix.
+        # Require complete, distinct expressions: substring matches can conceal
+        # an unapplied fix or insert the same header again on a second run.
+        if old in new or new in old:
+            raise SystemExit(f"Ambiguous Windows patch expression: {filename}")
         count = text.count(old)
         if count == 1:
             text = text.replace(old, new, 1)
