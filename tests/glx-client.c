@@ -11,6 +11,23 @@ int main(void) {
     setbuf(stdout,NULL);
     Display *d=XOpenDisplay(NULL);
     if(!d) return 2;
+    /* Older Mesa compares even pbuffer limits when matching window configs.
+     * Require a window-only config (limits omitted from the wire), alongside
+     * the actual context, drawing and presentation checks below. */
+    int available=0,legacy_window=0;
+    GLXFBConfig *all=glXGetFBConfigs(d,DefaultScreen(d),&available);
+    for(int i=0;all && i<available;i++) {
+        int type,depth,stencil,db;
+        if(glXGetFBConfigAttrib(d,all[i],GLX_DRAWABLE_TYPE,&type) ||
+           glXGetFBConfigAttrib(d,all[i],GLX_DEPTH_SIZE,&depth) ||
+           glXGetFBConfigAttrib(d,all[i],GLX_STENCIL_SIZE,&stencil) ||
+           glXGetFBConfigAttrib(d,all[i],GLX_DOUBLEBUFFER,&db)) return 11;
+        if((type&GLX_WINDOW_BIT) && !(type&GLX_PBUFFER_BIT) &&
+           depth==24 && stencil==8 && db)
+            legacy_window=1;
+    }
+    XFree(all);
+    if(!legacy_window) {fputs("No legacy Mesa window config\n",stderr);return 12;}
     int attrs[]={GLX_RGBA,GLX_DOUBLEBUFFER,GLX_DEPTH_SIZE,24,GLX_STENCIL_SIZE,8,None};
     XVisualInfo *visual=glXChooseVisual(d,DefaultScreen(d),attrs);
     if(!visual) {fputs("No compatible GLX visual\n",stderr);return 3;}

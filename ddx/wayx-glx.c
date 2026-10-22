@@ -47,27 +47,35 @@ static __GLXscreen *probe_screen(ScreenPtr screen) {
     /* Standard RGBA formats used by Mesa drisw. Depth/stencil are allocated
      * by the remote renderer; only the 24-bit XRGB color image crosses X11. */
     __GLXconfig **next=&glx->fbconfigs;
-    for (int double_buffer=0;double_buffer<2;double_buffer++) {
-        for (int depth=0;depth<2;depth++) {
-            __GLXconfig *config=calloc(1,sizeof(*config));
-            if (!config) {destroy_screen(glx);return NULL;}
-            config->visualType=GLX_TRUE_COLOR;
-            config->redBits=config->greenBits=config->blueBits=8;
-            config->redMask=0xff0000;config->greenMask=0xff00;config->blueMask=0xff;
-            config->rgbBits=24;
-            config->bindToTextureRgb=config->bindToTextureRgba=config->yInverted=TRUE;
-            config->bindToTextureTargets=GLX_TEXTURE_1D_BIT_EXT|GLX_TEXTURE_2D_BIT_EXT|GLX_TEXTURE_RECTANGLE_BIT_EXT;
-            config->depthBits=depth?24:0;
-            config->stencilBits=depth?8:0;
-            config->doubleBufferMode=double_buffer;
-            config->drawableType=GLX_WINDOW_BIT|GLX_PIXMAP_BIT|GLX_PBUFFER_BIT;
-            config->renderType=GLX_RGBA_BIT;
-            config->visualRating=GLX_NONE;
-            config->transparentPixel=GLX_NONE;
-            config->maxPbufferWidth=config->maxPbufferHeight=16384;
-            config->maxPbufferPixels=16384*16384;
-            config->swapMethod=GLX_SWAP_COPY_OML;
-            *next=config;next=&config->next;
+    for (int pbuffer=0;pbuffer<2;pbuffer++) {
+        for (int double_buffer=0;double_buffer<2;double_buffer++) {
+            for (int depth=0;depth<2;depth++) {
+                __GLXconfig *config=calloc(1,sizeof(*config));
+                if (!config) {destroy_screen(glx);return NULL;}
+                config->visualType=GLX_TRUE_COLOR;
+                config->redBits=config->greenBits=config->blueBits=8;
+                config->redMask=0xff0000;config->greenMask=0xff00;config->blueMask=0xff;
+                config->rgbBits=24;
+                config->bindToTextureRgb=config->bindToTextureRgba=config->yInverted=TRUE;
+                config->bindToTextureTargets=GLX_TEXTURE_1D_BIT_EXT|GLX_TEXTURE_2D_BIT_EXT|GLX_TEXTURE_RECTANGLE_BIT_EXT;
+                config->depthBits=depth?24:0;
+                config->stencilBits=depth?8:0;
+                config->doubleBufferMode=double_buffer;
+                config->drawableType=GLX_WINDOW_BIT|GLX_PIXMAP_BIT;
+                config->renderType=GLX_RGBA_BIT;
+                config->visualRating=GLX_NONE;
+                config->transparentPixel=GLX_NONE;
+                /* Mesa 11/18 compares these limits against its zero-initialized
+                 * drisw configs. Keep window/pixmap-only configs with zero limits,
+                 * alongside the existing pbuffer-capable configs for newer Mesa. */
+                if (pbuffer) {
+                    config->drawableType|=GLX_PBUFFER_BIT;
+                    config->maxPbufferWidth=config->maxPbufferHeight=16384;
+                    config->maxPbufferPixels=16384*16384;
+                }
+                config->swapMethod=GLX_SWAP_COPY_OML;
+                *next=config;next=&config->next;
+            }
         }
     }
     __glXInitExtensionEnableBits(glx->glx_enable_bits);

@@ -37,6 +37,11 @@ FBConfig。XLibre 处理真实 GLX 1.4 控制协议，远端 Mesa drisw/llvmpipe
 软件上下文并通过 X11 PutImage 传输颜色图像。OpenGL 版本取决于远端 Mesa；不把
 GLX 协议版本或 wgpu 的能力当作应用的 OpenGL 能力。
 
+每组颜色/深度/双缓冲组合同时提供 window/pixmap-only 和 Pbuffer 配置。
+前者的 Pbuffer 限制为零，XLibre 不在协议中发送对应属性，兼容旧版 Mesa
+对这些字段的严格匹配；后者保留原有 16384 尺寸上限。Ubuntu 16.04 的
+Mesa 18.0.5 已验证修复前同客户端报无匹配 FBConfig，修复后真实绘图通过。
+
 构建使用固定 libglvnd 头文件，不链接宿主 OpenGL。GLX 解码器中的 GL 调用改走
 上游 procedure-dispatch 接口；provider 拒绝所有服务端间接上下文，ForceCurrent
 也拒绝对 direct-context tag 执行服务端 GL 请求。测试检查错误返回，避免无宿主
