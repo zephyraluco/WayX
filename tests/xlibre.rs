@@ -57,6 +57,7 @@ fn xlibre_draw_and_input_roundtrip() -> Result<()> {
                 "-nolisten"
             },
             "tcp",
+            "+iglx",
             "-ac",
         ]
         .iter()
@@ -176,6 +177,7 @@ fn xlibre_draw_and_input_roundtrip() -> Result<()> {
             key && button,
             "Expected X11 keycode 38 and button 1, got key={key}, button={button}"
         );
+        glx_negotiation(&conn, win)?;
         scroll_roundtrip(backend.clone(), &conn, win, &client_display)?;
         #[cfg(feature = "desktop")]
         selection_roundtrip(backend.clone(), &client_display)?;
@@ -431,6 +433,48 @@ fn scroll_roundtrip(
     ensure!(
         point.root_x == 30 && point.root_y == 40,
         "Scrolling moved the pointer"
+    );
+    Ok(())
+}
+
+fn glx_negotiation(conn: &x11rb::rust_connection::RustConnection, window: u32) -> Result<()> {
+    use x11rb::protocol::glx::ConnectionExt as _;
+    let version = conn.glx_query_version(1, 4)?.reply()?;
+    ensure!(
+        version.major_version == 1 && version.minor_version >= 4,
+        "Missing GLX 1.4 negotiation"
+    );
+    let configs = conn.glx_get_fb_configs(0)?.reply()?;
+    ensure!(configs.num_fb_configs > 0, "No GLX FBConfigs");
+    let id = configs
+        .property_list
+        .as_chunks::<2>()
+        .0
+        .iter()
+        .find(|pair| pair[0] == 0x8013)
+        .context("Missing FBConfig ID")?[1];
+    let context = conn.generate_id()?;
+    conn.glx_create_new_context(context, id, 0, 0x8014, 0, true)?
+        .check()?;
+    ensure!(
+        conn.glx_is_direct(context)?.reply()?.is_direct,
+        "Context incorrectly advertised as indirect"
+    );
+    let current = conn.glx_make_current(window, context, 0)?.reply()?;
+    ensure!(
+        conn.glx_get_string(current.context_tag, 0x1f00)?
+            .reply()
+            .is_err(),
+        "Server GL command accepted on a client context"
+    );
+    conn.glx_make_current(0, 0, current.context_tag)?.reply()?;
+    conn.glx_destroy_context(context)?.check()?;
+    let indirect = conn.generate_id()?;
+    ensure!(
+        conn.glx_create_new_context(indirect, id, 0, 0x8014, 0, false)?
+            .check()
+            .is_err(),
+        "Unimplemented indirect rendering was accepted"
     );
     Ok(())
 }

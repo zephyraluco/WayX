@@ -46,7 +46,7 @@ jobs:
           target/release/wayx serve --core "$(cat build/xlibre/wayx-core-path.txt)" --frames 3 -- :196 -screen 0 640x480x24 -crtcs 1@640x480 -nolisten tcp -ac
       - name: Stage and exercise relocated core runtime
         run: |
-          python3 scripts/bundle-core.py --core "$(cat build/xlibre/wayx-core-path.txt)" --client target/release/wayx --compiler "$(command -v xkbcomp)" --xkb-dir "$(pkg-config --variable=xkbconfigdir xkbcomp)" --license-dir build/xlibre-source --output build/core-runtime
+          python3 scripts/bundle-core.py --core "$(cat build/xlibre/wayx-core-path.txt)" --client target/release/wayx --compiler "$(command -v xkbcomp)" --xkb-dir "$(pkg-config --variable=xkbconfigdir xkbcomp)" --license-dir build/xlibre-source --license-dir build/native-sources --output build/core-runtime
           mv build/core-runtime build/relocated-runtime
           build/relocated-runtime/wayx.sh --frames 3 -- :196 -screen 0 640x480x24 -crtcs 1@640x480 -nolisten tcp -ac
       - name: Archive runtime preserving executable permissions

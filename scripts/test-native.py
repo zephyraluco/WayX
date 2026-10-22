@@ -12,6 +12,7 @@ import time
 parser = argparse.ArgumentParser()
 parser.add_argument("--binary", type=Path, default=Path("target/debug/wayx"))
 parser.add_argument("--core", type=Path)
+parser.add_argument("--glx-client", type=Path)
 args = parser.parse_args()
 binary = str(args.binary.resolve())
 xvfb = os.environ.get("WAYX_TEST_XVFB") or shutil.which("Xvfb")
@@ -56,11 +57,28 @@ with tempfile.TemporaryDirectory(prefix="wayx-native-") as temp:
                                 "tests/native-rootless.c", *flags, "-o", str(client)], check=True)
                 rootless = subprocess.Popen([binary, "serve", "--rootless", "--core", str(args.core.resolve()),
                                              "--", f":{core_display}", "-screen", "0", "1280x800x24",
-                                             "-crtcs", "1@1280x800", "-nolisten", "tcp", "-auth", str(auth)], env=env)
+                                             "-crtcs", "1@1280x800", "-nolisten", "tcp", "-extension", "MIT-SHM", "-auth", str(auth)], env=env)
                 try:
                     client_env = env.copy()
                     client_env["XAUTHORITY"] = str(auth)
                     subprocess.run([str(client), f":{core_display}", f":{host}"], env=client_env, check=True, timeout=30)
+                    if args.glx_client:
+                        observer = Path(temp) / "native-glx"
+                        subprocess.run(["cc", "-std=c11", "-Wall", "-Wextra", "-Werror",
+                                        "tests/native-glx.c", *flags, "-o", str(observer)], check=True)
+                        gl_env = client_env.copy()
+                        gl_env.update(DISPLAY=f":{core_display}", LIBGL_ALWAYS_SOFTWARE="1", GALLIUM_DRIVER="llvmpipe")
+                        gl_env.pop("LIBGL_ALWAYS_INDIRECT", None)
+                        gl_client = subprocess.Popen([str(args.glx_client.resolve())], env=gl_env, stdin=subprocess.PIPE)
+                        try:
+                            subprocess.run([str(observer)], env=env, check=True, timeout=20)
+                            gl_client.communicate(input=b"\n", timeout=5)
+                            if gl_client.returncode != 0:
+                                raise RuntimeError(f"GLX client failed: {gl_client.returncode}")
+                        finally:
+                            if gl_client.poll() is None:
+                                gl_client.kill()
+                                gl_client.wait()
                     if rootless.poll() is not None:
                         raise RuntimeError("Closing a rootless window terminated the server")
                 finally:

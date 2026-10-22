@@ -192,7 +192,13 @@ static void attach_screen(CallbackListPtr *list,void *closure,void *data) {
     api->frame_damage(backend,1,0,0,screen->width,screen->height,fb->paddedBytesWidth,(const uint8_t*)fb->pfbMemory,(size_t)fb->paddedBytesWidth*screen->height);
     timer=TimerSet(NULL,0,8,poll_backend,NULL);
 }
+#ifdef GLXEXT
+extern void wayx_glx_init(void);
+#endif
 void InitOutput(int argc,char **argv) {
+#ifdef GLXEXT
+    wayx_glx_init();
+#endif
     WayxVfbInitOutput(argc,argv);
     if (vfbNumScreens!=1) FatalError("WayX currently supports one X screen\n");
     if (!AddCallback(&PostInitRootWindowCallback,attach_screen,NULL)) FatalError("WayX failed to register screen callback\n");

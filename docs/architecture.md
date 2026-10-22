@@ -30,6 +30,23 @@ Damage 记录在屏幕 Pixmap 上。8 毫秒定时器将受损矩形和实际 st
 
 内存上限：单帧缓冲 256 MiB，所有窗口总计 512 MiB、最多 1024 个窗口，单轴不超过 16384。显卡自身能力可能更低。Rust 的窗口模型维护 ID、父子关系、标题、可见性、焦点和递归销毁，默认 DDX 注册整个 X 屏幕；`--rootless` 则由 Composite 手动重定向根窗口的子窗口，将每个顶层窗口的独立 Pixmap 注册到 Rust 窗口模型。Damage 相对 Pixmap 的坐标经边框偏移校正后上传；嵌套子窗口保留在同一 Pixmap 中。窗口销毁和 Pixmap 重建会解除 Damage 跟踪，避免继续访问已释放的服务器对象。
 
+## 客户端软件 OpenGL
+
+DDX 注册 client-only GLX provider，提供 24-bit XRGB、单/双缓冲及 depth/stencil
+FBConfig。XLibre 处理真实 GLX 1.4 控制协议，远端 Mesa drisw/llvmpipe 建立 direct
+软件上下文并通过 X11 PutImage 传输颜色图像。OpenGL 版本取决于远端 Mesa；不把
+GLX 协议版本或 wgpu 的能力当作应用的 OpenGL 能力。
+
+构建使用固定 libglvnd 头文件，不链接宿主 OpenGL。GLX 解码器中的 GL 调用改走
+上游 procedure-dispatch 接口；provider 拒绝所有服务端间接上下文，ForceCurrent
+也拒绝对 direct-context tag 执行服务端 GL 请求。测试检查错误返回，避免无宿主
+GL dispatch 时意外执行绘图。此路径不提供服务端间接 GL、DRI2/DRI3 或宿主 GL GPU
+加速。帧缓冲和 C ABI 保持现有约束，新增 GLX provider 不改变 ABI v2。
+
+回归包括关闭 MIT-SHM 后的 TCP Mesa VBO 绘制、OpenGL 像素回读、OGRE 实际绘制，
+分别验证 rootful/rootless 的 Damage 像素；原生窗口测试另检查 wgpu 呈现的颜色。
+当前不据此宣称特定远端 ROS Kinetic/RViz 安装已完成实机验收。
+
 ## 窗口管理
 
 Rust 内部 X11 连接同时驱动 Selection 与 WM_S0/SubstructureRedirect，避免两套事件消费者。处理 MapRequest、ConfigureRequest、常用 EWMH ClientMessage，维护客户端列表、堆叠顺序和活动窗口。DDX 将 ICCCM 尺寸约束、瞬态关系、坐标及窗口状态以固定 64 字节结构同步到 Rust；原生 MOVE/RESIZE/STATE 回到 C 的服务器线程执行。新建窗口保持隐藏，直到显式映射，避免未完成初始化的根桌面被呈现。

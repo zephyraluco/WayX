@@ -43,7 +43,8 @@ jobs:
             python3 meson ninja-build libx11-dev libxkbcommon-dev libwayland-dev \
             libpixman-1-dev libxkbfile-dev libxfont-dev libmd-dev xtrans-dev \
             x11proto-dev xkb-data x11-xkb-utils libvulkan1 mesa-vulkan-drivers xvfb \
-            libxcursor1 libx11-xcb1 libxi6 libxkbcommon-x11-0
+            libxcursor1 libx11-xcb1 libxi6 libxkbcommon-x11-0 libgl-dev libglx-dev \
+            libgl1-mesa-dri libglx-mesa0 mesa-utils libogre-1.12-dev
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
       - run: bash scripts/build-xlibre.sh
@@ -55,6 +56,19 @@ jobs:
         run: |
           cc -std=c11 -Wall -Wextra -Werror tests/xim-client.c -lX11 -o /tmp/wayx-xim-client
           WAYX_TEST_CORE=$PWD/build/xlibre/hw/wayx/libwayx-xserver.so WAYX_TEST_XIM_CLIENT=/tmp/wayx-xim-client cargo test --locked --test ime -- --ignored --nocapture
+      - name: Verify TCP software OpenGL and OGRE pixels
+        env:
+          LIBGL_ALWAYS_SOFTWARE: "1"
+          GALLIUM_DRIVER: llvmpipe
+        run: |
+          cc -std=c11 -Wall -Wextra -Werror tests/glx-client.c $(pkg-config --cflags --libs gl x11) -o /tmp/wayx-glx-client
+          c++ -std=c++17 -Wall -Wextra -Werror -isystem "$(pkg-config --variable=includedir OGRE)/OGRE" tests/ogre-client.cpp $(pkg-config --libs OGRE) -o /tmp/wayx-ogre-client
+          export WAYX_TEST_CORE=$PWD/build/xlibre/hw/wayx/libwayx-xserver.so
+          export WAYX_TEST_OGRE_PLUGIN="$(pkg-config --variable=plugindir OGRE)/RenderSystem_GL.so"
+          for client in /tmp/wayx-glx-client /tmp/wayx-ogre-client; do
+            WAYX_TEST_GLX_CLIENT=$client cargo test --locked --test glx -- --ignored --nocapture
+            WAYX_TEST_ROOTLESS=1 WAYX_TEST_GLX_CLIENT=$client cargo test --locked --test glx -- --ignored --nocapture
+          done
       - run: mkdir -p /tmp/wayx-runtime && chmod 700 /tmp/wayx-runtime && XDG_RUNTIME_DIR=/tmp/wayx-runtime WGPU_BACKEND=vulkan cargo run --locked -- gpu-smoke
       - name: Check winit X11 runtime libraries
         run: |
@@ -68,7 +82,7 @@ jobs:
       - name: Native X11 rendering and XLibre lifecycle
         env:
           WGPU_BACKEND: vulkan
-        run: python3 scripts/test-native.py --binary target/release/wayx --core build/xlibre/hw/wayx/libwayx-xserver.so
+        run: python3 scripts/test-native.py --binary target/release/wayx --core build/xlibre/hw/wayx/libwayx-xserver.so --glx-client /tmp/wayx-glx-client
       - uses: actions/upload-artifact@v4
         with:
           name: xlibre-Linux-${{ runner.arch }}-${{ github.sha }}

@@ -25,10 +25,16 @@ import sys
 path=Path(sys.argv[1]); text=path.read_text(); hook="subdir('wayx')"
 if hook not in text: path.write_text(text+'\n'+hook+'\n')
 PY
+# Headers only: modern OpenGL is rendered by remote Mesa, not by the host.
+gl_headers="$(python3 "$project_root/scripts/fetch-build-source.py" \
+    https://github.com/NVIDIA/libglvnd/archive/refs/tags/v1.7.0.tar.gz \
+    073e7292788d4d3eeb45ea6c7bdcce9bfdb3b3eef8d7dbd47f2f30dce046ef98 \
+    libglvnd-1.7.0 "$project_root/build/native-sources")"
+python3 "$project_root/scripts/prepare-glx-client.py" "$source_dir" "$gl_headers/include"
 # Native dependencies must be available through pkg-config; no authentication or
 # package-signature checks are disabled. Let pkg-config locate native XKB data.
 args=(--buildtype=debugoptimized -Dxorg=false -Dxnest=false -Dxwin=false -Dxquartz=false
-      -Dxvfb=true -Dglamor=false -Dglx=false -Dglx_dri=false -Dgbm=false -Ddrm=false
+      -Dxvfb=true -Dglamor=false -Dglx=true -Dglx_dri=false -Dgbm=false -Ddrm=false
       -Ddri1=false -Ddri2=false -Ddri3=false -Dudev=false -Dudev_kms=false
       -Dseatd_libseat=false -Dxselinux=false -Dxdmcp=false -Dinput_thread=false
       -Dxdm-auth-1=false -Dtests=false -Ddefault_font_path=built-ins)

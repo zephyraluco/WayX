@@ -278,3 +278,50 @@ cargo test --locked --test ime -- --ignored --nocapture
 ## 平滑滚动
 
 触控板的小数滚动通过 XI2 连续滚动轴传给应用；只支持旧式滚轮的应用由 XLibre 累积后接收按钮 4–7。支持水平、垂直、方向反转以及操作系统产生的惯性滚动，不额外合成惯性。真实核心测试验证两轴小数、反转、旧客户端按钮数量和指针位置不变。Windows/macOS 物理触控板手感仍需人工验收。
+
+## OpenGL / GLX 与 RViz
+
+WayX 已提供 XLibre GLX 1.4 的 visual、FBConfig、drawable 与 direct-context 协商。
+实际 OpenGL 由**远端应用所在机器的 Mesa 软件驱动**执行，完成的图像通过普通
+X11 请求传回 WayX，再由现有 Damage/wgpu 路径呈现。GLX 协议版本 1.4 不等于
+应用 OpenGL 只能使用 1.4：TCP 测试已实际运行 Mesa llvmpipe 的 OpenGL 4.5、VBO
+绘制和 OGRE 1.12，并检查客户端回读及 WayX 收到的像素。
+
+服务端间接 OpenGL、宿主 GPU 的 GLX 加速和 DRI2/DRI3 尚未实现；不接受服务端
+间接上下文，即使手动传入 `+iglx`。运行应用时应取消 `LIBGL_ALWAYS_INDIRECT`，
+使用 Mesa 的客户端软件渲染路径。此方式不依赖跨机器共享内存。
+
+更新**完整运行包**并重新启动本地 XLibre 后，可先用同一 SSH 命令运行：
+
+```powershell
+.\bin\wayx.exe ssh --host 172.19.9.39 --user jz --password `
+  --known-hosts "$env:USERPROFILE\.ssh\known_hosts" `
+  --xauthority .\Xauthority --display 100 `
+  --command "env -u LIBGL_ALWAYS_INDIRECT LIBGL_ALWAYS_SOFTWARE=1 GALLIUM_DRIVER=llvmpipe __GLX_VENDOR_LIBRARY_NAME=mesa glxinfo -B"
+```
+
+远端需要 Mesa 软件驱动及 `mesa-utils`。输出应表明软件渲染器（如 llvmpipe）及
+应用可用的 OpenGL 版本。然后启动 RViz：
+
+```powershell
+.\bin\wayx.exe ssh --host 172.19.9.39 --user jz --password `
+  --known-hosts "$env:USERPROFILE\.ssh\known_hosts" `
+  --xauthority .\Xauthority --display 100 `
+  --command "source /opt/ros/kinetic/setup.bash && env -u LIBGL_ALWAYS_INDIRECT LIBGL_ALWAYS_SOFTWARE=1 GALLIUM_DRIVER=llvmpipe __GLX_VENDOR_LIBRARY_NAME=mesa QT_X11_NO_MITSHM=1 rviz"
+```
+
+3D 运算消耗远端 CPU，动态图像会占用传输带宽。OGRE 回归不等同于特定 ROS Kinetic/
+RViz 安装的实机验收；该环境还需按上述命令验证。多屏、动态根屏幕分辨率、透明
+ARGB、服务端间接 OpenGL 和硬件 DRI 仍属于未完成的显示扩展。
+
+Linux 渲染验证（需 Mesa、GL/X11 开发包及 `libogre-1.12-dev`）：
+
+```sh
+cc -std=c11 -Wall -Wextra -Werror tests/glx-client.c $(pkg-config --cflags --libs gl x11) -o /tmp/wayx-glx-client
+WAYX_TEST_CORE=$PWD/build/xlibre/hw/wayx/libwayx-xserver.so \
+WAYX_TEST_GLX_CLIENT=/tmp/wayx-glx-client \
+cargo test --locked --test glx -- --ignored --nocapture
+```
+
+设置 `WAYX_TEST_ROOTLESS=1` 可验证 rootless。CI 额外执行 OGRE 实际绘制，并通过
+宿主 X11 读取原生窗口像素，验证最终 wgpu 呈现。
