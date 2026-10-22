@@ -51,6 +51,10 @@ jobs:
       - run: WAYX_TEST_CORE=$PWD/build/xlibre/hw/wayx/libwayx-xserver.so cargo test --locked --test xlibre -- --ignored --nocapture
       - run: WAYX_TEST_CORE=$PWD/build/xlibre/hw/wayx/libwayx-xserver.so cargo test --locked --test rootless -- --ignored --nocapture
       - run: WAYX_TEST_CORE=$PWD/build/xlibre/hw/wayx/libwayx-xserver.so cargo test --locked --test window_manager -- --ignored --nocapture
+      - name: Verify real Xlib XIM Unicode, preedit and focus routing
+        run: |
+          cc -std=c11 -Wall -Wextra -Werror tests/xim-client.c -lX11 -o /tmp/wayx-xim-client
+          WAYX_TEST_CORE=$PWD/build/xlibre/hw/wayx/libwayx-xserver.so WAYX_TEST_XIM_CLIENT=/tmp/wayx-xim-client cargo test --locked --test ime -- --ignored --nocapture
       - run: mkdir -p /tmp/wayx-runtime && chmod 700 /tmp/wayx-runtime && XDG_RUNTIME_DIR=/tmp/wayx-runtime WGPU_BACKEND=vulkan cargo run --locked -- gpu-smoke
       - name: Check winit X11 runtime libraries
         run: |

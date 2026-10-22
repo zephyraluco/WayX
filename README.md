@@ -4,7 +4,7 @@
 
 当前版本支持 Linux 上的 **rootful / rootless 显示**：远端 X11 应用通过 SSH 标准 X11 forwarding 接入本地 XLibre；XLibre FB/Pixman 生成的软件帧缓冲经 Damage 上传到 Rust，最终由 wgpu 呈现在 winit 原生窗口中。
 
-**不是完整的跨平台 X Server 发行版。** Rust 显示后端面向 Win32 / AppKit / Linux Wayland、X11；XLibre DDX 已在 Linux、macOS 和 Windows 构建及运行验证。已支持逐 X11 顶层窗口的 rootless 映射；Linux X11 窗口管理已接入；IME/XIM 尚未实现。Linux 使用 Wayland 作为本地窗口系统，不等于支持远端原生 Wayland 协议转发。
+**不是完整的跨平台 X Server 发行版。** Rust 显示后端面向 Win32 / AppKit / Linux Wayland、X11；XLibre DDX 已在 Linux、macOS 和 Windows 构建及运行验证。已支持逐 X11 顶层窗口的 rootless 映射；Linux X11 窗口管理已接入；已接入原生 IME → XIM 文本提交及回调式预编辑，三平台输入法交互仍待验收。Linux 使用 Wayland 作为本地窗口系统，不等于支持远端原生 Wayland 协议转发。
 
 ## 工程结构
 
@@ -14,6 +14,7 @@
 | `src/bridge.rs`, `include/wayx.h` | 版本化 C ABI、回调表、缓冲区校验、线程同步 |
 | `ddx/` | XLibre 软件 framebuffer DDX、Damage、键鼠输入接入 |
 | `src/desktop.rs` | winit 原生窗口/事件、wgpu 纹理上传与呈现、本地剪贴板 |
+| `src/ime.rs` | `@im=wayx` XIM 服务、输入焦点路由、Unicode 提交及预编辑回调 |
 | `src/selection.rs` | X11 CLIPBOARD 的 UTF8_STRING/STRING/TARGETS/TIMESTAMP/INCR 转换 |
 | `src/ssh.rs` | russh 会话、主机密钥校验、X11 channel、认证 cookie 替换 |
 | `src/auth.rs` | 本地 Xauthority 文件读取 |
@@ -65,6 +66,45 @@ WAYX_TEST_CORE="$(cat build/xlibre/wayx-core-path.txt)" \
 Windows 使用固定版本 vcpkg 编译 C 依赖，再用 MSYS2 UCRT64 构建协议头、XKB 工具、数据和核心 DLL；Rust 使用 MSVC，通过版本化 C ABI 交互。步骤见 [原生构建工作流](.github/workflows/native-core.yml) 与 [Windows 构建脚本](scripts/build-windows-core.sh)。核心 DLL、三项真实 X11 协议测试、Win32/DX12 呈现和含空格目录中的运行包重定位已在原生 CI 通过（提交 `a496bce`，[验证记录](https://github.com/zephyraluco/WayX/actions/runs/39709583993)）。这仍是实验性运行包，逐窗口原生交互及正式发行验收不在此验证范围内。
 
 `scripts/bundle-core.py` 整理客户端、核心、动态库依赖、XKB 数据和许可证；macOS 修正加载路径并使用 ad-hoc 签名，Windows 生成 CMD 启动入口。CI 移动运行包后启动，Windows 还隐藏原始依赖目录。这是运行包验证，不代表正式安装器或可信发行签名已经完成。
+
+## macOS 运行包快速连接
+
+从 [Native XLibre core 构建记录](https://github.com/zephyraluco/WayX/actions/workflows/native-core.yml)
+下载 `macos-core-runtime-<提交号>`（完整运行包，而非仅包含客户端的构件）。
+解压 ZIP，再解压里面的 `macos-core-runtime.tar.gz`，进入 `relocated-runtime`。
+运行包的二进制架构需与本机兼容，可用 `file bin/wayx` 和 `uname -m` 检查。
+不需要 XQuartz。
+
+当前仅有 ad-hoc 签名，没有 Developer ID 签名和 Apple 公证。遇到“Apple 无法验证”
+提示，可在“系统设置 → 隐私与安全性”中允许打开。确认是本项目下载的运行包后，
+也可仅在该运行包目录内执行 `xattr -dr com.apple.quarantine .`。
+
+以下认证文件只创建一次；不要在本地服务运行期间重新生成：
+
+```sh
+cd /你的路径/relocated-runtime
+chmod +x wayx.sh bin/wayx bin/xkbcomp
+if [ ! -e Xauthority ]; then
+  umask 077
+  cookie="$(openssl rand -hex 16)"
+  printf 'ffff0000000331303000124d49542d4d414749432d434f4f4b49452d310010%s' "$cookie" |
+    xxd -r -p > Xauthority
+  unset cookie
+fi
+./wayx.sh --rootless -- :100 -screen 0 1280x800x24 -crtcs 1@1280x800 \
+  -nolisten tcp -auth "$PWD/Xauthority"
+```
+
+保持服务运行，在另一终端进入同一个运行包目录后连接：
+
+```sh
+./bin/wayx ssh --host 172.22.2.23 --user jz --password \
+  --known-hosts "$HOME/.ssh/known_hosts" --xauthority "$PWD/Xauthority" \
+  --display 100 --command 'wjtools-arm64'
+```
+
+主机公钥须已核实并记录在 `known_hosts`，远端须启用 SSH X11 forwarding 并安装
+`xauth`。rootless 启动时不会立即显示根桌面；远端程序打开窗口后才会出现本地窗口。
 
 ## 显示后端演示
 
@@ -198,3 +238,39 @@ cargo run --locked -- gpu-smoke
 Artifacts 区域下载，保留 **7 天**；名称包含平台、架构（客户端）和完整提交 SHA。
 客户端单独下载包不包含 XLibre 及其运行依赖；核心运行包仍为实验性发行。
 构建或验证失败的平台不会发布成功产物，具体以对应任务结果为准。
+
+## 输入法（IME/XIM）
+
+使用带 `-auth` 的正常桌面启动方式时，WayX 在自己的 XLibre display 上自动注册
+`@im=wayx`，无需在远端运行额外的输入法守护进程。本地输入法由宿主系统提供。
+远端应用须使用 XIM，而不是独立的 IBus/Fcitx 或 Wayland 输入法通道。例如 Windows：
+
+```powershell
+.\bin\wayx.exe ssh --host 172.22.2.23 --user jz --password `
+  --known-hosts "$env:USERPROFILE\.ssh\known_hosts" `
+  --xauthority .\Xauthority --display 100 `
+  --command "env XMODIFIERS=@im=wayx GTK_IM_MODULE=xim QT_IM_MODULE=xim wjtools-arm64"
+```
+
+远端需要可用的 UTF-8 locale（用 `locale` 检查）；GTK/Qt 还需安装对应的 XIM
+输入模块。是否采用上述变量取决于应用所用工具包。未创建 XIC 的应用仍只能使用
+普通物理键输入。SSH 转发会自动传输 XIM 使用的 X11 请求，不需要额外端口。
+
+已验证真实 Xlib 的 `XOpenIM`、`XCreateIC`、`XFilterEvent`、`Xutf8LookupString`，
+包含中日韩、emoji、超过旧 32 字节限制的提交、预编辑回调、光标坐标、窗口切换、
+reset、销毁及异常退出清理。单次文本上限为 8 KiB，超限明确拒绝。
+候选窗位置按 XIC spot location 转换到原生窗口坐标；没有 spot 的客户端使用窗口原点。
+回调式预编辑由远端应用显示；`PreeditNothing`/`PreeditPosition` 使用 WayX 本地
+预编辑层，显示组合文字、下划线及光标。字体来自宿主系统，需有相应中日韩字体；
+运行包不附带字体。预编辑层最多显示两行，长文本会裁剪，单次提交仍支持 8 KiB。
+Windows/macOS/Wayland 的真实系统输入法、候选窗及组合键交互仍需原生人工验收；
+此阶段不将第 4 项记为完整跨平台验收完成。
+
+Linux 真实 XIM 回归（需先构建 XLibre）：
+
+```sh
+cc -std=c11 -Wall -Wextra -Werror tests/xim-client.c -lX11 -o /tmp/wayx-xim-client
+WAYX_TEST_CORE=$PWD/build/xlibre/hw/wayx/libwayx-xserver.so \
+WAYX_TEST_XIM_CLIENT=/tmp/wayx-xim-client \
+cargo test --locked --test ime -- --ignored --nocapture
+```

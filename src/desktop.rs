@@ -219,6 +219,31 @@ impl Image {
         );
         self.revision = fb.revision;
     }
+    fn overlay(&self, gpu: &Gpu, preedit: &crate::preedit::PreeditImage, spot: (i16, i16)) {
+        let width = preedit.width.min(self.width);
+        let height = preedit.height.min(self.height);
+        let x = (spot.0.max(0) as u32).min(self.width - width);
+        let y = (spot.1.max(0) as u32).min(self.height - height);
+        gpu.queue.write_texture(
+            wgpu::ImageCopyTexture {
+                texture: &self.texture,
+                mip_level: 0,
+                origin: wgpu::Origin3d { x, y, z: 0 },
+                aspect: wgpu::TextureAspect::All,
+            },
+            &preedit.pixels,
+            wgpu::ImageDataLayout {
+                offset: 0,
+                bytes_per_row: Some(preedit.width * 4),
+                rows_per_image: Some(preedit.height),
+            },
+            wgpu::Extent3d {
+                width,
+                height,
+                depth_or_array_layers: 1,
+            },
+        );
+    }
     fn draw(&self, gpu: &Gpu, target: &wgpu::TextureView) {
         let mut encoder = gpu
             .device
@@ -259,6 +284,12 @@ struct Native {
     remote_size: (u32, u32),
     title: String,
     transient_owner: Option<u32>,
+    composing: bool,
+    pressed_keys: std::collections::HashSet<u32>,
+    ime_allowed: bool,
+    ime_spot: (i16, i16),
+    ime_context: Option<(u32, u16, u16)>,
+    preedit: Option<crate::preedit::PreeditImage>,
 }
 impl Native {
     async fn new(
@@ -300,7 +331,7 @@ impl Native {
         }
         let window = Arc::new(event_loop.create_window(attributes)?);
         let _ = owner;
-        window.set_ime_allowed(true);
+        window.set_ime_allowed(false);
         let instance = wgpu::Instance::new(wgpu::InstanceDescriptor {
             backends: wgpu::util::backend_bits_from_env().unwrap_or(wgpu::Backends::all()),
             ..Default::default()
@@ -330,6 +361,12 @@ impl Native {
             remote_size: (width, height),
             title: title.to_owned(),
             transient_owner: None,
+            composing: false,
+            pressed_keys: std::collections::HashSet::new(),
+            ime_allowed: false,
+            ime_spot: (0, 0),
+            ime_context: None,
+            preedit: None,
         })
     }
     fn apply_state(
@@ -483,6 +520,9 @@ impl Native {
             self.image = Image::new(&self.gpu, fb.width, fb.height, self.config.format);
         }
         self.image.upload(&self.gpu, fb);
+        if let Some(preedit) = &self.preedit {
+            self.image.overlay(&self.gpu, preedit, self.ime_spot);
+        }
         let frame = match self.surface.get_current_texture() {
             Ok(frame) => frame,
             Err(wgpu::SurfaceError::Lost | wgpu::SurfaceError::Outdated) => {
@@ -527,6 +567,7 @@ struct App {
     backend: SharedBackend,
     native: HashMap<WindowId, Native>,
     clipboard: Option<arboard::Clipboard>,
+    preedit_painter: Option<crate::preedit::Painter>,
     clipboard_revision: u64,
     last_clipboard: Instant,
     error: Option<anyhow::Error>,
@@ -577,6 +618,7 @@ impl App {
                 &auth,
                 self.backend.clone(),
             )?;
+            selection.enable_ime()?;
             if self.rootless {
                 selection.enable_window_management()?;
             }
@@ -680,6 +722,51 @@ impl App {
                 }
             }
             self.last_clipboard = Instant::now();
+        }
+        // X11 replies require the DDX thread to acquire the backend mutex.
+        drop(backend);
+        if let Some(ime) = self
+            .selection
+            .as_ref()
+            .and_then(|selection| selection.ime.as_ref())
+        {
+            for native in self.native.values_mut() {
+                let cursor = if native.window.has_focus() {
+                    ime.cursor(native.id)?
+                } else {
+                    None
+                };
+                let allowed = cursor.is_some();
+                let context = if allowed { ime.focus_token() } else { None };
+                if context != native.ime_context && native.ime_allowed {
+                    native.window.set_ime_allowed(false);
+                    native.ime_allowed = false;
+                    native.composing = false;
+                    native.preedit = None;
+                    native.image.revision = 0;
+                }
+                native.ime_context = context;
+                if allowed != native.ime_allowed {
+                    native.window.set_ime_allowed(allowed);
+                    native.ime_allowed = allowed;
+                    native.composing = false;
+                    native.preedit = None;
+                    native.image.revision = 0;
+                }
+                if let Some((x, y)) = cursor {
+                    if native.ime_spot != (x, y) {
+                        native.image.revision = 0;
+                        native.ime_spot = (x, y);
+                    }
+                    let size = native.window.inner_size();
+                    let sx = size.width as f64 / native.remote_size.0.max(1) as f64;
+                    let sy = size.height as f64 / native.remote_size.1.max(1) as f64;
+                    native.window.set_ime_cursor_area(
+                        winit::dpi::PhysicalPosition::new(x as f64 * sx, y as f64 * sy),
+                        winit::dpi::PhysicalSize::new(sx.max(1.), (16. * sy).max(1.)),
+                    );
+                }
+            }
         }
         Ok(())
     }
@@ -803,6 +890,20 @@ impl ApplicationHandler for App {
                 input.y = y;
             }
             WindowEvent::Focused(focus) => {
+                if !focus {
+                    native.composing = false;
+                    native.preedit = None;
+                    native.image.revision = 0;
+                    native.pressed_keys.clear();
+                    if let Some(ime) = self
+                        .selection
+                        .as_mut()
+                        .and_then(|selection| selection.ime.as_mut())
+                        && let Err(error) = ime.cancel(id)
+                    {
+                        tracing::warn!(%error, "IME cancellation failed");
+                    }
+                }
                 input.kind = event::FOCUS;
                 input.flags = u32::from(focus);
             }
@@ -811,6 +912,9 @@ impl ApplicationHandler for App {
                 is_synthetic: false,
                 ..
             } => {
+                if native.composing {
+                    return;
+                }
                 let PhysicalKey::Code(key) = ke.physical_key else {
                     return;
                 };
@@ -824,20 +928,76 @@ impl ApplicationHandler for App {
                 if ke.repeat {
                     return;
                 }
+                if ke.state == ElementState::Pressed {
+                    native.pressed_keys.insert(code);
+                } else {
+                    native.pressed_keys.remove(&code);
+                }
             }
             WindowEvent::Ime(Ime::Commit(text)) => {
-                // Split on Unicode scalar boundaries; every text event is valid UTF-8.
-                for ch in text.chars() {
-                    let mut part = InputEvent {
-                        kind: event::TEXT,
+                native.composing = false;
+                native.preedit = None;
+                native.image.revision = 0;
+                if let Some(ime) = self
+                    .selection
+                    .as_mut()
+                    .and_then(|selection| selection.ime.as_mut())
+                    && let Err(error) = ime.commit(id, &text)
+                {
+                    tracing::warn!(%error, "IME commit rejected");
+                }
+                return;
+            }
+            WindowEvent::Ime(Ime::Preedit(text, cursor)) => {
+                let starting = !native.composing && !text.is_empty();
+                native.composing = !text.is_empty();
+                // A platform can deliver the first key-down before Preedit.
+                // Balance those presses before suppressing composition keys.
+                let release: Vec<_> = if starting {
+                    native.pressed_keys.drain().collect()
+                } else {
+                    Vec::new()
+                };
+                native.preedit = None;
+                native.image.revision = 0;
+                if let Some(ime) = self
+                    .selection
+                    .as_mut()
+                    .and_then(|selection| selection.ime.as_mut())
+                {
+                    match ime.preedit_at(id, &text, cursor) {
+                        Ok(()) if !text.is_empty() && !ime.inline_preedit() => {
+                            let painter = self
+                                .preedit_painter
+                                .get_or_insert_with(crate::preedit::Painter::new);
+                            native.preedit =
+                                Some(painter.paint(&text, cursor, native.remote_size.0));
+                        }
+                        Ok(()) => {}
+                        Err(error) => tracing::warn!(%error, "IME preedit rejected"),
+                    }
+                }
+                for code in release {
+                    self.input(InputEvent {
+                        kind: event::KEY,
                         window: id,
+                        detail: code,
                         ..Default::default()
-                    };
-                    let mut bytes = [0; 4];
-                    let text = ch.encode_utf8(&mut bytes);
-                    part.detail = text.len() as u32;
-                    part.text[..text.len()].copy_from_slice(text.as_bytes());
-                    self.input(part);
+                    });
+                }
+                return;
+            }
+            WindowEvent::Ime(Ime::Disabled) => {
+                native.composing = false;
+                native.preedit = None;
+                native.image.revision = 0;
+                if let Some(ime) = self
+                    .selection
+                    .as_mut()
+                    .and_then(|selection| selection.ime.as_mut())
+                    && let Err(error) = ime.cancel(id)
+                {
+                    tracing::warn!(%error, "IME cancellation failed");
                 }
                 return;
             }
@@ -973,6 +1133,7 @@ pub fn run(
         backend,
         native: HashMap::new(),
         clipboard: None,
+        preedit_painter: None,
         clipboard_revision: 0,
         last_clipboard: Instant::now(),
         error: None,
@@ -1051,44 +1212,73 @@ pub async fn gpu_smoke() -> Result<()> {
         usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
         view_formats: &[],
     });
-    image.draw(&gpu, &target.create_view(&Default::default()));
-    let buffer = gpu.device.create_buffer(&wgpu::BufferDescriptor {
-        label: None,
-        size: 512,
-        usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
-        mapped_at_creation: false,
-    });
-    let mut encoder = gpu.device.create_command_encoder(&Default::default());
-    encoder.copy_texture_to_buffer(
-        target.as_image_copy(),
-        wgpu::ImageCopyBuffer {
-            buffer: &buffer,
-            layout: wgpu::ImageDataLayout {
-                offset: 0,
-                bytes_per_row: Some(256),
-                rows_per_image: Some(2),
+    // Verify the IME overlay's BGRA color and edge clipping, then erase it
+    // without changing the X11 framebuffer or relying on new remote damage.
+    for overlay in [false, true, false] {
+        image.revision = 0;
+        image.upload(&gpu, &fb);
+        if overlay {
+            image.overlay(
+                &gpu,
+                &crate::preedit::PreeditImage {
+                    width: 1,
+                    height: 1,
+                    pixels: vec![0, 255, 255, 255],
+                },
+                (i16::MAX, i16::MAX),
+            );
+        }
+        image.draw(&gpu, &target.create_view(&Default::default()));
+        let buffer = gpu.device.create_buffer(&wgpu::BufferDescriptor {
+            label: None,
+            size: 512,
+            usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
+            mapped_at_creation: false,
+        });
+        let mut encoder = gpu.device.create_command_encoder(&Default::default());
+        encoder.copy_texture_to_buffer(
+            target.as_image_copy(),
+            wgpu::ImageCopyBuffer {
+                buffer: &buffer,
+                layout: wgpu::ImageDataLayout {
+                    offset: 0,
+                    bytes_per_row: Some(256),
+                    rows_per_image: Some(2),
+                },
             },
-        },
-        wgpu::Extent3d {
-            width: 2,
-            height: 2,
-            depth_or_array_layers: 1,
-        },
-    );
-    gpu.queue.submit(Some(encoder.finish()));
-    let (tx, rx) = std::sync::mpsc::channel();
-    buffer.slice(..).map_async(wgpu::MapMode::Read, move |r| {
-        let _ = tx.send(r);
-    });
-    gpu.device.poll(wgpu::Maintain::Wait);
-    rx.recv()??;
-    let bytes = buffer.slice(..).get_mapped_range();
+            wgpu::Extent3d {
+                width: 2,
+                height: 2,
+                depth_or_array_layers: 1,
+            },
+        );
+        gpu.queue.submit(Some(encoder.finish()));
+        let (tx, rx) = std::sync::mpsc::channel();
+        buffer.slice(..).map_async(wgpu::MapMode::Read, move |r| {
+            let _ = tx.send(r);
+        });
+        gpu.device.poll(wgpu::Maintain::Wait);
+        rx.recv()??;
+        let bytes = buffer.slice(..).get_mapped_range();
+        anyhow::ensure!(
+            bytes[..8] == [255, 0, 0, 255, 0, 255, 0, 255]
+                && bytes[256..260] == [0, 0, 255, 255]
+                && bytes[260..264]
+                    == if overlay {
+                        [255, 255, 0, 255]
+                    } else {
+                        [255, 255, 255, 255]
+                    },
+            "GPU framebuffer color/orientation mismatch"
+        );
+    }
     anyhow::ensure!(
-        bytes[..8] == [255, 0, 0, 255, 0, 255, 0, 255]
-            && bytes[256..264] == [0, 0, 255, 255, 255, 255, 255, 255],
-        "GPU framebuffer color/orientation mismatch"
+        fb.pixels[12..16] == [255, 255, 255, 255],
+        "IME modified remote framebuffer"
     );
-    tracing::info!("GPU texture upload, shader composition and readback passed");
+    tracing::info!(
+        "GPU texture upload, IME overlay/restore, shader composition and readback passed"
+    );
     Ok(())
 }
 

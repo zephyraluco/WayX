@@ -15,3 +15,9 @@ pub mod window;
 
 #[cfg(feature = "desktop")]
 pub mod wm;
+
+#[cfg(feature = "desktop")]
+pub mod ime;
+
+#[cfg(feature = "desktop")]
+mod preedit;

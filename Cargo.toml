@@ -10,7 +10,7 @@ crate-type = ["rlib", "staticlib"]
 
 [features]
 default = ["desktop", "ssh"]
-desktop = ["dep:winit", "dep:wgpu", "dep:pollster", "dep:arboard", "dep:x11rb"]
+desktop = ["dep:winit", "dep:wgpu", "dep:pollster", "dep:arboard", "dep:x11rb", "dep:xim", "dep:cosmic-text"]
 ssh = ["dep:russh", "dep:tokio", "dep:rand", "dep:rpassword"]
 
 [dependencies]
@@ -28,6 +28,8 @@ russh = { version = "0.64", default-features = false, features = ["ring", "rsa"]
 tokio = { version = "1", features = ["rt-multi-thread", "net", "io-util", "sync", "time"], optional = true }
 rand = { version = "0.8", optional = true }
 rpassword = { version = "7", optional = true }
+xim = { version = "0.5", features = ["x11rb-server"], optional = true }
+cosmic-text = { version = "0.14", default-features = false, features = ["std", "swash"], optional = true }
 
 x11rb = { version = "0.13", features = ["xfixes"], optional = true }
 

@@ -42,7 +42,16 @@ winit 物理键转换成显式 USB HID usage，再由 C DDX 映射为 evdev XKB 
 
 按键和鼠标按钮保持有序；只合并相邻、同窗口的 motion。队列有 4096 条上限，溢出明确报错，不静默丢掉 key-up。失焦释放已按下的键和按钮。物理键自动重复交给 XKB。滚轮当前映射为 X11 按钮 4–7，尚未累积亚单位触控板滚动。
 
-IME Commit 已以有界 UTF-8 TEXT 事件传入队列，但 DDX **尚未实现 XIM/XIC 注入**，不会把文本伪装成物理键；IME 不应被当作可用功能。当前 XKB 默认布局为 us；可通过 XLibre 支持的 XKB 配置或 X11 客户端切换布局。
+原生 IME Commit/Preedit 直接进入 Rust XIM 服务（`@im=wayx`），与 Selection/WM
+共享内部 X11 连接和事件循环，不再投递到 DDX 不处理的 TEXT 队列。XIM 协议和
+COMPOUND_TEXT 编码由 `xim` 提供，XLibre 负责传输 X11 请求。单条文本限制 8 KiB；
+按 XIC 焦点、真实 X11 输入焦点及原生顶层窗口共同校验目标，避免串窗。回调式
+预编辑发送 Start/Draw/Done；候选窗坐标取 XIC spot 并换算 framebuffer 缩放。
+`PreeditNothing`/`PreeditPosition` 使用 cosmic-text 与系统字体栅格化本地预编辑层，
+只覆盖 GPU 纹理，不修改远端 framebuffer；结束时恢复原图。组合期间抑制物理键，
+并平衡组合开始前已转发的 key-down；失焦、reset、销毁和断连清理上下文。
+Linux 真实 Xlib/XLibre 协议回归已覆盖 Unicode、预编辑及焦点生命周期；各宿主实际
+输入法交互仍待验收。当前 XKB 默认布局为 us；可通过 XLibre 支持的 XKB 配置或 X11 客户端切换布局。
 
 ## 剪贴板
 

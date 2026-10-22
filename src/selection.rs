@@ -30,7 +30,7 @@ struct Send {
     started: Instant,
 }
 pub struct SelectionBridge {
-    conn: RustConnection,
+    conn: std::sync::Arc<RustConnection>,
     window: Window,
     atoms: Atoms,
     backend: SharedBackend,
@@ -43,6 +43,7 @@ pub struct SelectionBridge {
     timestamp: Timestamp,
     last_poll: Instant,
     manager: Option<crate::wm::WindowManager>,
+    pub(crate) ime: Option<crate::ime::ImeBridge>,
 }
 impl SelectionBridge {
     pub fn new(conn: RustConnection, screen: usize, backend: SharedBackend) -> Result<Self> {
@@ -82,7 +83,7 @@ impl SelectionBridge {
         .check()?;
         conn.flush()?;
         Ok(Self {
-            conn,
+            conn: std::sync::Arc::new(conn),
             window,
             atoms,
             backend,
@@ -95,6 +96,7 @@ impl SelectionBridge {
             timestamp: 0,
             last_poll: Instant::now() - Duration::from_secs(1),
             manager: None,
+            ime: None,
         })
     }
     pub fn connect(display: &str, backend: SharedBackend) -> Result<Self> {
@@ -131,6 +133,11 @@ impl SelectionBridge {
             cookie.to_vec(),
         )?;
         Self::new(conn, 0, backend)
+    }
+    /// Register the WayX XIM server on the internal connection.
+    pub fn enable_ime(&mut self) -> Result<()> {
+        self.ime = Some(crate::ime::ImeBridge::new(self.conn.clone(), 0)?);
+        Ok(())
     }
     /// Enable the rootless window manager on this internal X11 connection.
     pub fn enable_window_management(&mut self) -> Result<()> {
@@ -292,6 +299,12 @@ impl SelectionBridge {
             self.last_poll = Instant::now();
         }
         while let Some(event) = self.conn.poll_for_event()? {
+            if let Some(ime) = &mut self.ime
+                && ime.filter_event(&event)?
+                && matches!(event, Event::SelectionRequest(_))
+            {
+                continue;
+            }
             if let Some(manager) = &mut self.manager
                 && manager.handle(&self.conn, &event)?
             {
