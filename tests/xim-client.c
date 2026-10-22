@@ -24,7 +24,16 @@ static void draw(XIM im, XPointer data, XPointer call) {
     XIMPreeditDrawCallbackStruct *p = (void *)call;
     if (p->text && p->text->length) draws++;
 }
-int main(void) {
+int main(int argc, char **argv) {
+    (void)argv;
+    if (argc > 1) {
+        const char *locales[] = {"C", "en_US.UTF-8", "UTF-8"};
+        for (int i = 0; i < 3; i++) {
+            const char *locale = setlocale(LC_CTYPE, locales[i]);
+            printf("locale=%s libc=%s XSupportsLocale=%d\n", locales[i], locale ? locale : "unsupported", XSupportsLocale());
+        }
+        return 0;
+    }
     setbuf(stdout, NULL);
     if (!setlocale(LC_CTYPE, "")) {
         fprintf(stderr, "setlocale failed: LC_ALL=%s: %s\n", getenv("LC_ALL"), strerror(errno));

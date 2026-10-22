@@ -20,9 +20,16 @@ jobs:
           cargo test --locked --test xlibre --test rootless --test window_manager -- --ignored --nocapture
       - name: Verify real Xlib XIM interoperability
         run: |
+          # Restore full locale resources even when the runner's preinstalled
+          # Xlib has been trimmed. This is a test-client dependency only.
+          brew reinstall libx11
           export XLOCALEDIR="$(brew --prefix libx11)/share/X11/locale"
           test -f "$XLOCALEDIR/locale.alias"
+          test -f "$XLOCALEDIR/en_US.UTF-8/XLC_LOCALE"
+          pkg-config --modversion x11
           cc -std=c11 -Wall -Wextra -Werror $(pkg-config --cflags x11) tests/xim-client.c $(pkg-config --libs x11) -o /tmp/wayx-xim-client
+          otool -L /tmp/wayx-xim-client
+          /tmp/wayx-xim-client --probe-locale
           WAYX_TEST_CORE="$(cat build/xlibre/wayx-core-path.txt)" WAYX_TEST_XIM_CLIENT=/tmp/wayx-xim-client cargo test --locked --test ime -- --ignored --nocapture
       - name: Exercise native AppKit window and Metal presentation
         run: |
