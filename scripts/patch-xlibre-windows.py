@@ -5,6 +5,7 @@ import sys
 
 root = Path(sys.argv[1])
 patches = {
+    "Xext/glx/unpack.h": [("(long)(res)", "(uintptr_t)(res)")],
     "Xext/xkeyboard/ddxLoad.c": [
         ('#if defined(WIN32)\n#define PATHSEPARATOR "\\\\"\n#else\n#define PATHSEPARATOR "/"\n#endif', '#if defined(WIN32)\n#define PATHSEPARATOR "\\\\"\n/* cmd.exe strips the outer pair around a quoted executable command. */\n#define WAYX_XKBCOMP_QUOTE "\\""\n#else\n#define PATHSEPARATOR "/"\n#define WAYX_XKBCOMP_QUOTE ""\n#endif'),
         ('    if (asprintf(&buf,\n                 "\\"%s%sxkbcomp\\" -w %d %s -xkm \\"%s\\" "\n                 "-em1 %s -emp %s -eml %s \\"%s%s.xkm\\"",\n', '    if (asprintf(&buf,\n                 WAYX_XKBCOMP_QUOTE\n                 "\\"%s%sxkbcomp\\" -w %d %s -xkm \\"%s\\" "\n                 "-em1 %s -emp %s -eml %s \\"%s%s.xkm\\"" WAYX_XKBCOMP_QUOTE,\n'),

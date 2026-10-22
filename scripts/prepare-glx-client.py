@@ -62,3 +62,12 @@ if new not in text:
     path.write_text(text.replace(old, new, 1))
 # Copy only Khronos/libglvnd headers; retain their bundled copyright notices.
 shutil.copytree(headers, source / "hw/wayx/gl-headers", dirs_exist_ok=True)
+
+# Only ABI declarations are needed. Prevent GL headers from pulling Win32 UI
+# types (BOOL/ATOM/INT32/FreeResource) into the X server namespace.
+private_gl = source / "hw/wayx/gl-headers/GL/gl.h"
+private_gl.write_text("""/* WayX: declare APIENTRY without importing windows.h into XLibre. */
+#if defined(_WIN32) && !defined(APIENTRY)
+#define APIENTRY __stdcall
+#endif
+""" + private_gl.read_text())
