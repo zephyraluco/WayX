@@ -1,10 +1,14 @@
 #!/usr/bin/env python3
-"""Apply checked LLP64 pointer conversions to the pinned XLibre source."""
+"""Apply checked Windows compatibility fixes to the pinned XLibre source."""
 from pathlib import Path
 import sys
 
 root = Path(sys.argv[1])
 patches = {
+    "os/Xtranssock.c": [("#include <afunix.h>", "#include <afunix.h>\n#include <process.h>")],
+    # The server transport uses no Xlib internals. Importing them after
+    # Xwindows.h conflicts with its Status macro and leaks client-side types.
+    "os/Xtransutil.c": [("#include <X11/Xlibint.h>\n", "/* Server transport does not require Xlib internals. */\n")],
     "dix/events.c": [("(WindowPtr) (long) focusID", "(WindowPtr) (intptr_t) focusID")],
     "dix/resource.c": [
         ("AddResource(%lx, %x, %lx)", "AddResource(%lx, %x, %p)"),
@@ -34,5 +38,5 @@ for filename, replacements in patches.items():
         if count == 1:
             text = text.replace(old, new, 1)
         elif count != 0 or new not in text:
-            raise SystemExit(f"Unexpected pinned XLibre pointer conversion: {filename}")
+            raise SystemExit(f"Unexpected pinned XLibre Windows patch: {filename}")
     path.write_text(text)

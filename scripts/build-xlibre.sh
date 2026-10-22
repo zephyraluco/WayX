@@ -49,7 +49,7 @@ if [[ -f "$build_dir/build.ninja" ]]; then
 else
   meson setup "$build_dir" "$source_dir" "${args[@]}"
 fi
-meson compile -C "$build_dir" wayx-xserver -j "${WAYX_BUILD_JOBS:-3}"
+meson compile -C "$build_dir" wayx-xserver -j "${WAYX_BUILD_JOBS:-3}" --ninja-args=-k0
 # Do not assume Linux's .so naming on Darwin or Windows.
 meson introspect --targets "$build_dir" > "$build_dir/wayx-targets.json"
 python3 - "$build_dir" <<'PY_ARTIFACT'
