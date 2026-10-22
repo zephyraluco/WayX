@@ -49,6 +49,8 @@ jobs:
           path: build/vcpkg
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
+        with:
+          cache-on-failure: true
       - uses: ilammy/msvc-dev-cmd@v1
       - uses: actions/cache/restore@v4
         id: native-dependency-cache
@@ -114,14 +116,14 @@ jobs:
           $core = (Get-Content build/xlibre/wayx-core-path.txt).Trim()
           python scripts/bundle-core.py --core $core --client target/release/wayx.exe --compiler build/windows-native/bin/xkbcomp.exe --xkb-dir build/windows-native/share/xkeyboard-config-2 --search-dir build/windows-installed/x64-windows/bin --search-dir $env:WAYX_MSYS2_ROOT/ucrt64/bin --license-dir build/xlibre-source --license-dir build/windows-installed/x64-windows/share --license-dir build/native-sources --output build/core-runtime
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          Move-Item build/core-runtime build/relocated-runtime
+          Move-Item build/core-runtime 'build/relocated runtime'
           Move-Item build/windows-installed build/windows-installed-disabled
           Move-Item build/windows-native build/windows-native-disabled
-          & build/relocated-runtime/wayx.cmd --frames 3 -- :196 -screen 0 640x480x24 -crtcs 1@640x480 -listen tcp -ac
+          & './build/relocated runtime/wayx.cmd' --frames 3 -- :196 -screen 0 640x480x24 -crtcs 1@640x480 -listen tcp -ac
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - uses: actions/upload-artifact@v4
         with:
           name: windows-core-runtime-${{ github.sha }}
-          path: build/relocated-runtime
+          path: build/relocated runtime
           if-no-files-found: error
           retention-days: 7
