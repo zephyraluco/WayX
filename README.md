@@ -4,7 +4,7 @@
 
 当前版本支持 Linux 上的 **rootful / rootless 显示**：远端 X11 应用通过 SSH 标准 X11 forwarding 接入本地 XLibre；XLibre FB/Pixman 生成的软件帧缓冲经 Damage 上传到 Rust，最终由 wgpu 呈现在 winit 原生窗口中。
 
-**不是完整的跨平台 X Server 发行版。** Rust 显示后端面向 Win32 / AppKit / Linux Wayland、X11；XLibre DDX 已在 Linux 和 macOS 构建及运行验证，Windows 原生集成正在验收。已支持逐 X11 顶层窗口的 rootless 映射；Linux X11 窗口管理已接入；IME/XIM 和 Windows/macOS 的 XLibre 集成仍在推进。Linux 使用 Wayland 作为本地窗口系统，不等于支持远端原生 Wayland 协议转发。
+**不是完整的跨平台 X Server 发行版。** Rust 显示后端面向 Win32 / AppKit / Linux Wayland、X11；XLibre DDX 已在 Linux、macOS 和 Windows 构建及运行验证。已支持逐 X11 顶层窗口的 rootless 映射；Linux X11 窗口管理已接入；IME/XIM 尚未实现。Linux 使用 Wayland 作为本地窗口系统，不等于支持远端原生 Wayland 协议转发。
 
 ## 工程结构
 
@@ -50,7 +50,7 @@ cargo test --locked --no-default-features --lib
 
 ## macOS 与 Windows 核心
 
-macOS 的 XLibre 核心、真实协议测试和 AppKit/Metal rootful 窗口已在原生 CI 通过；逐窗口的 AppKit 交互和运行包重定位仍需分别验收。
+macOS 的 XLibre 核心、真实协议测试和 AppKit/Metal rootful 窗口已在原生 CI 通过；运行包搬移后的启动也已通过；逐窗口的 AppKit 交互仍需专门验收。
 
 ```sh
 brew install meson ninja pkgconf pixman libxfont2 libxkbfile xorgproto xtrans xkbcomp xkeyboard-config
@@ -62,7 +62,7 @@ WAYX_TEST_CORE="$(cat build/xlibre/wayx-core-path.txt)" \
 
 构建脚本将实际 `.so` / `.dylib` / `.dll` 路径写入 `build/xlibre/wayx-core-path.txt`，`serve --core` 使用该路径。XKB 路径通过原生 pkg-config 获取；`WAYX_XKB_DIR` 与 `WAYX_XKB_BIN_DIR` 可在构建和运行时覆盖。
 
-Windows 使用固定版本 vcpkg 编译 C 依赖，再用 MSYS2 UCRT64 构建协议头、XKB 工具、数据和核心 DLL；Rust 使用 MSVC，通过版本化 C ABI 交互。步骤见 [原生构建工作流](.github/workflows/native-core.yml) 与 [Windows 构建脚本](scripts/build-windows-core.sh)。32 个依赖已在 Windows 编译通过；核心的后续编译、链接、Win32 呈现和运行包验收尚未通过，不计为 Windows X Server 已交付。
+Windows 使用固定版本 vcpkg 编译 C 依赖，再用 MSYS2 UCRT64 构建协议头、XKB 工具、数据和核心 DLL；Rust 使用 MSVC，通过版本化 C ABI 交互。步骤见 [原生构建工作流](.github/workflows/native-core.yml) 与 [Windows 构建脚本](scripts/build-windows-core.sh)。核心 DLL、三项真实 X11 协议测试、Win32/DX12 呈现和含空格目录中的运行包重定位已在原生 CI 通过（提交 `a496bce`，[验证记录](https://github.com/zephyraluco/WayX/actions/runs/39709583993)）。这仍是实验性运行包，逐窗口原生交互及正式发行验收不在此验证范围内。
 
 `scripts/bundle-core.py` 整理客户端、核心、动态库依赖、XKB 数据和许可证；macOS 修正加载路径并使用 ad-hoc 签名，Windows 生成 CMD 启动入口。CI 移动运行包后启动，Windows 还隐藏原始依赖目录。这是运行包验证，不代表正式安装器或可信发行签名已经完成。
 

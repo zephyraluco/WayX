@@ -20,7 +20,7 @@ flowchart TB
 
 共享状态由 `Arc<Mutex<Backend>>` 管理。ABI 使用不透明 handle 和完整 `WayxApi` 回调表，带版本和结构体尺寸检查。禁止把 Rust 对象、字符串或 Vec 布局当成 C 类型。销毁 handle 必须等待所有调用结束。无效非空指针无法由 ABI 安全验证，调用方仍有义务保证指针有效。
 
-动态库在 XLibre 工作线程返回前一直保持加载。原生窗口关闭或 UI 出错后请求 XLibre 退出、等待工作线程结束，再释放资源；不会在核心还运行时卸载插件。
+XLibre 安装的进程级信号处理器可能在工作线程返回后仍存在，因此客户端将核心库保持加载至进程退出。嵌入模式在支持 setitimer 的平台禁用全局调度定时器；原生窗口关闭或 UI 出错后请求 XLibre 退出并等待工作线程结束。
 
 ## 显示路径
 
@@ -65,12 +65,12 @@ SSH 会话和所有 X11 channel 使用 russh。只允许已记录的原始主机
 | 范围 | Linux | Windows | macOS |
 | --- | --- | --- | --- |
 | Rust 状态、认证和加密 SSH 回归 | 原生 CI 通过 | 原生 Rust CI 通过 | 原生 Rust CI 通过 |
-| C ABI 与核心回调 | C harness 与真实核心通过 | 等待 DLL 链接与运行验证 | 真实核心回调通过 |
-| Rust winit/wgpu 显示后端 | 原生 X11 surface 与 Vulkan 软件渲染已运行 | Rust 编译链接通过；Win32/DX12 呈现待验证 | AppKit 窗口与 Metal 呈现已运行 |
-| XLibre 自定义 DDX | 固定提交构建、协议与输入测试通过 | 32 个 C 依赖已构建，核心移植与包验证进行中 | 核心、协议与原生呈现通过，运行包待验收 |
+| C ABI 与核心回调 | C harness 与真实核心通过 | DLL 链接与真实核心回调通过 | 真实核心回调通过 |
+| Rust winit/wgpu 显示后端 | 原生 X11 surface 与 Vulkan 软件渲染已运行 | Win32 窗口与 DX12 软件呈现已运行 | AppKit 窗口与 Metal 呈现已运行 |
+| XLibre 自定义 DDX | 固定提交构建、协议与输入测试通过 | 核心、协议、原生呈现与含空格目录运行包通过 | 核心、协议、原生呈现与搬移运行包通过 |
 | 本地 Wayland surface | 已启用编译，当前环境无 compositor，未运行 | 不适用 | 不适用 |
 | 远端原生 Wayland 应用 | 不属于 SSH X11 forwarding 支持范围 | 同左 | 同左 |
 
-CI 配置并不等于已执行成功。完整跨平台发行需要分别解决 XLibre 的平台依赖、库打包、线程/信号行为和原生交互验证。Rust 三平台 CI 的通过记录为提交 c68b614；macOS 原生核心验证见 run 39611787101。Linux rootful/rootless 与窗口管理已运行验证；Windows 核心和各平台发行验收仍未完成。
+CI 配置并不等于已执行成功。完整跨平台发行需要分别解决 XLibre 的平台依赖、库打包、线程/信号行为和原生交互验证。提交 a496bce 的 Rust 三平台及 Linux 核心 CI（run 39709583984）与 Windows/macOS 原生核心 CI（run 39709583993）均已通过。Linux rootful/rootless 与窗口管理已运行验证；各平台正式发行验收仍未完成。
 
 Rootless 集成测试额外覆盖完全遮挡下绘制、边框坐标、子窗口合成、独立输入、客户端 resize、unmap/remap 和窗口生命周期。原生测试通过宿主 X11 查询两个实际独立窗口，并关闭其中一个，确认另一个保留。
