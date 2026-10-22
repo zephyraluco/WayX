@@ -28,9 +28,11 @@ for filename, replacements in patches.items():
     path = root / filename
     text = path.read_text()
     for old, new in replacements:
-        if new in text:
-            continue
-        if text.count(old) != 1:
+        # Some replacements are substrings of the old expression. Check the old
+        # expression first so a partial match cannot conceal an unapplied fix.
+        count = text.count(old)
+        if count == 1:
+            text = text.replace(old, new, 1)
+        elif count != 0 or new not in text:
             raise SystemExit(f"Unexpected pinned XLibre pointer conversion: {filename}")
-        text = text.replace(old, new, 1)
     path.write_text(text)
