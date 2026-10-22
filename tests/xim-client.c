@@ -3,6 +3,7 @@
 #include <unistd.h>
 #include <X11/Xutil.h>
 #include <locale.h>
+#include <errno.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -25,7 +26,14 @@ static void draw(XIM im, XPointer data, XPointer call) {
 }
 int main(void) {
     setbuf(stdout, NULL);
-    if (!setlocale(LC_ALL, "") || !XSetLocaleModifiers("@im=wayx")) return 2;
+    if (!setlocale(LC_CTYPE, "")) {
+        fprintf(stderr, "setlocale failed: LC_ALL=%s: %s\n", getenv("LC_ALL"), strerror(errno));
+        return 2;
+    }
+    if (!XSetLocaleModifiers("@im=wayx")) {
+        fprintf(stderr, "XSetLocaleModifiers failed: LC_CTYPE=%s, XSupportsLocale=%d\n", setlocale(LC_CTYPE, NULL), XSupportsLocale());
+        return 2;
+    }
     Display *d = XOpenDisplay(NULL);
     if (!d) return 3;
     XIM im = XOpenIM(d, NULL, NULL, NULL);

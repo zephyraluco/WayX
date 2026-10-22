@@ -20,6 +20,8 @@ jobs:
           cargo test --locked --test xlibre --test rootless --test window_manager -- --ignored --nocapture
       - name: Verify real Xlib XIM interoperability
         run: |
+          export XLOCALEDIR="$(brew --prefix libx11)/share/X11/locale"
+          test -f "$XLOCALEDIR/locale.alias"
           cc -std=c11 -Wall -Wextra -Werror $(pkg-config --cflags x11) tests/xim-client.c $(pkg-config --libs x11) -o /tmp/wayx-xim-client
           WAYX_TEST_CORE="$(cat build/xlibre/wayx-core-path.txt)" WAYX_TEST_XIM_CLIENT=/tmp/wayx-xim-client cargo test --locked --test ime -- --ignored --nocapture
       - name: Exercise native AppKit window and Metal presentation
