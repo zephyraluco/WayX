@@ -14,7 +14,11 @@ int main() {
         root.setRenderSystem(renderer);root.initialise(false);
         Ogre::NameValuePairList options{{"left","20"},{"top","20"},{"border","none"},{"FSAA","0"}};
         auto *window=root.createRenderWindow("WayX OGRE validation",64,64,false,&options);
+#if OGRE_VERSION < ((1 << 16) | (10 << 8))
+        auto *scene=root.createSceneManager(Ogre::ST_GENERIC,"scene");
+#else
         auto *scene=root.createSceneManager();
+#endif
         auto *camera=scene->createCamera("camera");
         camera->setProjectionType(Ogre::PT_ORTHOGRAPHIC);camera->setOrthoWindow(2,2);
         camera->setNearClipDistance(.1);camera->setFarClipDistance(10);
@@ -31,12 +35,20 @@ int main() {
         triangle->position(.8,-.8,0);triangle->colour(1,0,0);
         triangle->position(0,.8,0);triangle->colour(1,0,0);triangle->end();
         scene->getRootSceneNode()->createChildSceneNode()->attachObject(triangle);
-        root.renderOneFrame();
+        window->setActive(true);window->setVisible(true);
+        window->update(false);
         std::vector<unsigned char> pixels(64*64*4);
         Ogre::PixelBox box(64,64,1,Ogre::PF_BYTE_RGBA,pixels.data());
-        window->copyContentsToMemory(Ogre::Box(0,0,64,64),box,Ogre::RenderTarget::FB_AUTO);
+        // Read the rendered back buffer before swapping: its contents after
+        // a swap are undefined, notably with Mesa 18 and OGRE 1.9.
+#if OGRE_VERSION < ((1 << 16) | (10 << 8))
+        window->copyContentsToMemory(box,Ogre::RenderTarget::FB_BACK);
+#else
+        window->copyContentsToMemory(Ogre::Box(0,0,64,64),box,Ogre::RenderTarget::FB_BACK);
+#endif
         auto offset=(32*64+32)*4;
         if(pixels[offset]<240 || pixels[offset+1]>10 || pixels[offset+2]>10) return 3;
+        window->swapBuffers();
         unsigned long xid=0;window->getCustomAttribute("WINDOW",&xid);
         std::cout<<"GLX_READY "<<xid<<" OGRE "<<OGRE_VERSION_NAME<<std::endl;
         (void)std::cin.get();

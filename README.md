@@ -290,6 +290,8 @@ X11 请求传回 WayX，再由现有 Damage/wgpu 路径呈现。GLX 协议版本
 为兼容 Ubuntu 16.04 的旧版 Mesa，另提供不声明 Pbuffer 的 window/pixmap
 FBConfig，避免旧版驱动严格匹配 Pbuffer 尺寸时排除所有配置。Mesa 18.0.5
 已通过修复前失败、修复后成功的 TCP 绘图验证，覆盖 rootful/rootless。
+Ubuntu 16.04 的 OGRE 1.9 也通过实际场景绘制、回读及 WayX 像素检查；测试客户端
+兼容 OGRE 1.9/1.12 的 API，并在交换缓冲前回读，避免检查未定义的后缓冲内容。
 
 服务端间接 OpenGL、宿主 GPU 的 GLX 加速和 DRI2/DRI3 尚未实现；不接受服务端
 间接上下文，即使手动传入 `+iglx`。运行应用时应取消 `LIBGL_ALWAYS_INDIRECT`，
