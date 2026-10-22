@@ -380,6 +380,13 @@ impl Native {
             self.window.set_title(title);
             self.title = title.to_owned();
         }
+        if self.remote_size != (width, height) {
+            let size = winit::dpi::PhysicalSize::new(width, height);
+            if self.window.inner_size() != size {
+                let _ = self.window.request_inner_size(size);
+            }
+            self.remote_size = (width, height);
+        }
         if state.flags & window_state::ROOTLESS == 0 {
             return Ok(());
         }
@@ -389,13 +396,6 @@ impl Native {
             if self.window.outer_position().ok() != Some(position) {
                 self.window.set_outer_position(position);
             }
-        }
-        if self.remote_size != (width, height) {
-            let size = winit::dpi::PhysicalSize::new(width, height);
-            if self.window.inner_size() != size {
-                let _ = self.window.request_inner_size(size);
-            }
-            self.remote_size = (width, height);
         }
         if previous != Some(*state) {
             self.window

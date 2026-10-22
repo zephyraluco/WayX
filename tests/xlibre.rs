@@ -179,6 +179,7 @@ fn xlibre_draw_and_input_roundtrip() -> Result<()> {
         );
         glx_negotiation(&conn, win)?;
         scroll_roundtrip(backend.clone(), &conn, win, &client_display)?;
+        randr_resize_roundtrip(backend.clone(), &conn, root, &client_display)?;
         #[cfg(feature = "desktop")]
         selection_roundtrip(backend.clone(), &client_display)?;
         conn.destroy_window(win)?.check()?;
@@ -198,6 +199,105 @@ fn xlibre_draw_and_input_roundtrip() -> Result<()> {
         "XLibre failed"
     );
     outcome
+}
+
+fn randr_resize_roundtrip(
+    backend: wayx::bridge::SharedBackend,
+    conn: &x11rb::rust_connection::RustConnection,
+    root: u32,
+    display: &str,
+) -> Result<()> {
+    use x11rb::protocol::randr::{ConnectionExt as _, NotifyMask};
+    conn.randr_query_version(1, 5)?.reply()?;
+    let range = conn.randr_get_screen_size_range(root)?.reply()?;
+    ensure!(range.max_width == 16384 && range.max_height == 16384);
+    conn.randr_select_input(root, NotifyMask::SCREEN_CHANGE)?
+        .check()?;
+    while conn.poll_for_event()?.is_some() {}
+    backend.lock().unwrap().push_input(InputEvent {
+        kind: event::RESIZE,
+        window: 1,
+        x: 480.0,
+        y: 360.0,
+        ..Default::default()
+    })?;
+    wait_for(|| {
+        let b = backend.lock().unwrap();
+        let fb = &b.windows[&1].framebuffer;
+        (fb.width, fb.height) == (480, 360)
+    })?;
+    let geometry = conn.get_geometry(root)?.reply()?;
+    ensure!(
+        (geometry.width, geometry.height) == (480, 360),
+        "Native resize did not resize X root"
+    );
+    let resources = conn.randr_get_screen_resources_current(root)?.reply()?;
+    let crtc = conn.randr_get_crtc_info(resources.crtcs[0], 0)?.reply()?;
+    ensure!(
+        (crtc.width, crtc.height) == (480, 360),
+        "Native resize did not update output mode"
+    );
+    let mut notified = false;
+    while let Some(event) = conn.poll_for_event()? {
+        if let Event::RandrScreenChangeNotify(event) = event {
+            notified |= (event.width, event.height) == (480, 360);
+        }
+    }
+    ensure!(notified, "Missing RandR screen-size notification");
+    conn.randr_set_screen_size(root, 640, 480, 169, 127)?
+        .check()?;
+    let (fresh, index) = x11rb::connect(Some(display))?;
+    ensure!(
+        (
+            fresh.setup().roots[index].width_in_pixels,
+            fresh.setup().roots[index].height_in_pixels
+        ) == (640, 480)
+    );
+    let gc = conn.generate_id()?;
+    conn.create_gc(gc, root, &CreateGCAux::new().foreground(0x00ff00))?
+        .check()?;
+    conn.poly_fill_rectangle(
+        root,
+        gc,
+        &[Rectangle {
+            x: 620,
+            y: 460,
+            width: 10,
+            height: 10,
+        }],
+    )?
+    .check()?;
+    wait_for(|| {
+        let b = backend.lock().unwrap();
+        let fb = &b.windows[&1].framebuffer;
+        let offset = (460 * fb.width as usize + 620) * 4;
+        fb.pixels.get(offset..offset + 4) == Some(&[0, 255, 0, 255])
+    })?;
+    ensure!(
+        conn.randr_set_screen_size(root, 16384, 16384, 1000, 1000)?
+            .check()
+            .is_err(),
+        "Accepted framebuffer over memory limit"
+    );
+    let geometry = conn.get_geometry(root)?.reply()?;
+    ensure!(
+        (geometry.width, geometry.height) == (640, 480),
+        "Rejected resize changed geometry"
+    );
+    backend.lock().unwrap().push_input(InputEvent {
+        kind: event::RESIZE,
+        window: 1,
+        x: 320.0,
+        y: 240.0,
+        ..Default::default()
+    })?;
+    wait_for(|| {
+        let b = backend.lock().unwrap();
+        let fb = &b.windows[&1].framebuffer;
+        (fb.width, fb.height) == (320, 240)
+    })?;
+    conn.free_gc(gc)?.check()?;
+    Ok(())
 }
 
 #[cfg(feature = "desktop")]

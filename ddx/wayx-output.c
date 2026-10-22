@@ -35,6 +35,7 @@ extern const char *XkbBaseDirectory, *XkbBinDirectory;
 extern Bool SmartScheduleSignalEnable;
 #endif
 #include "wayx-rootless.h"
+#include "wayx-randr.h"
 
 int ddxProcessArgument(int argc,char **argv,int index) {
     if (!strcmp(argv[index],"-wayx-rootless")) {rootless=TRUE;return 1;}
@@ -125,6 +126,9 @@ static CARD32 poll_backend(OsTimerPtr unused,CARD32 now,void *closure) {
             else GiveUp(0);
             break;
         case WAYX_RESIZE:
+            if (!rootless && event.window==1 && isfinite(event.x) && isfinite(event.y) &&
+                event.x>=1 && event.x<=16384 && event.y>=1 && event.y<=16384)
+                resize_desktop(event.x,event.y);
             if(target && event.x>=1 && event.x<=16384 && event.y>=1 && event.y<=16384) {
                 uint32_t width=event.x,height=event.y;
                 if(api->window_constrain(backend,event.window,&width,&height)==0) {
@@ -140,7 +144,7 @@ static CARD32 poll_backend(OsTimerPtr unused,CARD32 now,void *closure) {
             break;
         case WAYX_STATE:if(target) native_window_state(target,event.flags);break;
         case WAYX_SHUTDOWN:GiveUp(0);break;
-        /* RESIZE currently scales the fixed X screen. TEXT/CLIPBOARD are consumed
+        /* TEXT/CLIPBOARD are consumed
          * by the selection/XIM layer, not synthesized into raw X keycodes. */
         default:break;
         }
@@ -171,6 +175,8 @@ static void attach_screen(CallbackListPtr *list,void *closure,void *data) {
     vfbScreenInfoPtr fb=vfbGetScreenPriv(screen);
     if (screen->myNum!=0 || fb->bitsPerPixel!=32 || fb->depth!=24)
         FatalError("WayX currently requires one depth-24, 32-bpp screen\n");
+    rrGetScrPriv(screen)->rrScreenSetSize=wayx_screen_size;
+    RRScreenSetSizeRange(screen,1,1,16384,16384);
     if (api->window_create(backend,1,0,screen->width,screen->height)<0)
         FatalError("WayX failed to create root display\n");
     const char title[]="WayX — XLibre desktop";

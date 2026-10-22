@@ -52,6 +52,25 @@ with tempfile.TemporaryDirectory(prefix="wayx-native-") as temp:
                 if Path(f"/tmp/.X11-unix/X{core_display}").exists():
                     raise RuntimeError("XLibre socket survived normal shutdown")
                 flags = shlex.split(subprocess.check_output(["pkg-config", "--cflags", "--libs", "x11"], text=True))
+                resize_client = Path(temp) / "resize-client"
+                subprocess.run(["cc", "-std=c11", "-D_POSIX_C_SOURCE=200809L", "-Wall", "-Wextra", "-Werror",
+                                "tests/native-resize.c", *flags, "-o", str(resize_client)], check=True)
+                desktop = subprocess.Popen([binary, "serve", "--core", str(args.core.resolve()),
+                                            "--", f":{core_display}", "-screen", "0", "1280x800x24",
+                                            "-crtcs", "1@1280x800", "-nolisten", "tcp", "-auth", str(auth)], env=env)
+                try:
+                    resize_env = env.copy()
+                    resize_env["XAUTHORITY"] = str(auth)
+                    subprocess.run([str(resize_client), f":{core_display}", f":{host}"], env=resize_env, check=True, timeout=30)
+                finally:
+                    desktop.terminate()
+                    try:
+                        if desktop.wait(timeout=5) != 0:
+                            raise RuntimeError("Resized desktop shutdown failed")
+                    except subprocess.TimeoutExpired:
+                        desktop.kill()
+                        desktop.wait()
+                        raise
                 client = Path(temp) / "rootless-client"
                 subprocess.run(["cc", "-std=c11", "-D_POSIX_C_SOURCE=200809L", "-Wall", "-Wextra", "-Werror",
                                 "tests/native-rootless.c", *flags, "-o", str(client)], check=True)

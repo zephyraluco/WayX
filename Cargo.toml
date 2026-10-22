@@ -34,6 +34,6 @@ cosmic-text = { version = "0.14", default-features = false, features = ["std", "
 x11rb = { version = "0.13", features = ["xfixes"], optional = true }
 
 [dev-dependencies]
-x11rb = { version = "0.13", features = ["xfixes", "xinput", "glx"] }
+x11rb = { version = "0.13", features = ["xfixes", "xinput", "glx", "randr"] }
 rand_10 = { package = "rand", version = "0.10" }
 tempfile = "3"
