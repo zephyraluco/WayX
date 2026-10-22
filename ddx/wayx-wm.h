@@ -1,6 +1,8 @@
 /* SPDX-License-Identifier: MIT
  * ICCCM metadata conversion and native input -> X11 window management. */
 #include "property.h"
+/* ICCCM WM_STATE values; no client-side Xlib headers in the DDX. */
+enum { WAYX_WM_NORMAL_STATE=1, WAYX_WM_ICONIC_STATE=3 };
 static Atom wm_protocols,wm_delete,wm_state,net_state,net_above,net_hidden;
 static Atom net_max_horz,net_max_vert,net_fullscreen;
 static PropertyPtr property(WindowPtr window,Atom atom,int format) {
@@ -77,7 +79,7 @@ static void native_window_state(WindowPtr window,uint32_t flags) {
     for(unsigned int i=0;i<extra_count;i++) combined[n++]=extras[i];
     for(unsigned int i=0;i<count;i++) combined[n++]=atoms[i];
     dixChangeWindowProperty(serverClient,window,net_state,XA_ATOM,32,PropModeReplace,n,combined,TRUE);
-    CARD32 state[]={flags&WAYX_MINIMIZED?IconicState:NormalState,0};
+    CARD32 state[]={flags&WAYX_MINIMIZED?WAYX_WM_ICONIC_STATE:WAYX_WM_NORMAL_STATE,0};
     dixChangeWindowProperty(serverClient,window,wm_state,wm_state,32,PropModeReplace,2,state,TRUE);
 }
 static void init_window_manager_atoms(void) {

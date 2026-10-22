@@ -5,6 +5,7 @@ import sys
 
 root = Path(sys.argv[1])
 patches = {
+    "os/log.c": [("#include <X11/Xos.h>\n\n#ifdef CONFIG_SYSLOG", "#include <X11/Xos.h>\n#ifdef WIN32\n#include <process.h>\n#endif\n\n#ifdef CONFIG_SYSLOG")],
     "os/Xtranssock.c": [("#include <afunix.h>\n\n#undef EADDRINUSE", "#include <afunix.h>\n#include <process.h>\n\n#undef EADDRINUSE")],
     # The server transport uses no Xlib internals. Importing them after
     # Xwindows.h conflicts with its Status macro and leaks client-side types.

@@ -1,6 +1,8 @@
 /* SPDX-License-Identifier: MIT
  * Rootful DDX based on XLibre's software framebuffer. No X11 protocol reimplementation.
  * The included upstream file retains its original copyright and license. */
+#include <math.h>
+
 #define InitOutput WayxVfbInitOutput
 #define ddxGiveUp WayxVfbGiveUp
 #define ddxProcessArgument WayxVfbProcessArgument

@@ -22,7 +22,6 @@ typedef struct WayxWindow {
 static WayxWindow *wayx_windows;
 static Bool rootless;
 static Atom title_atom;
-#include <X11/Xutil.h>
 #include "wayx-wm.h"
 
 static void window_damage_destroyed(DamagePtr object, void *closure) {
