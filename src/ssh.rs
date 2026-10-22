@@ -13,17 +13,39 @@ use tokio::{
     sync::Semaphore,
 };
 
-#[derive(Clone)]
+/// SSH user authentication; credentials are never included in debug output.
+pub enum Authentication {
+    /// Authenticate with an OpenSSH private key and optional passphrase variable.
+    PublicKey {
+        identity: PathBuf,
+        passphrase_env: Option<String>,
+    },
+    /// Authenticate with a password; None prompts without echo after host verification.
+    Password { password: Option<String> },
+}
 pub struct Options {
     pub host: String,
     pub port: u16,
     pub user: String,
-    pub identity: PathBuf,
-    pub passphrase_env: Option<String>,
+    pub authentication: Authentication,
     pub known_hosts: PathBuf,
     pub xauthority: PathBuf,
     pub display: u16,
     pub command: String,
+}
+#[derive(Debug, thiserror::Error)]
+enum AuthenticationError {
+    #[error("SSH {method} authentication failed")]
+    Rejected { method: &'static str },
+}
+#[derive(Debug, thiserror::Error)]
+enum RequestError {
+    #[error("{0}")]
+    Rejected(&'static str),
+    #[error("SSH channel closed before request acknowledgement ({0})")]
+    Closed(&'static str),
+    #[error("Remote command exited with status {0} before request acknowledgement")]
+    Exited(u32),
 }
 struct Client {
     host: String,
@@ -149,16 +171,6 @@ pub async fn connect(options: Options) -> Result<u32> {
     let mut fake_cookie = [0; 16];
     rand::rngs::OsRng.fill_bytes(&mut fake_cookie);
     let hex: String = fake_cookie.iter().map(|b| format!("{b:02x}")).collect();
-    let passphrase = options
-        .passphrase_env
-        .as_ref()
-        .map(|name| {
-            std::env::var(name)
-                .with_context(|| format!("SSH key passphrase variable {name} is not set"))
-        })
-        .transpose()?;
-    let key = load_secret_key(&options.identity, passphrase.as_deref())
-        .context("Read SSH identity; encrypted keys require --key-passphrase-env")?;
     let config = client::Config {
         keepalive_interval: Some(Duration::from_secs(30)),
         ..Default::default()
@@ -182,14 +194,54 @@ pub async fn connect(options: Options) -> Result<u32> {
     )
     .await
     .context("SSH connect timeout")??;
-    let hash = session.best_supported_rsa_hash().await?.flatten();
-    let auth = session
-        .authenticate_publickey(
-            options.user,
-            PrivateKeyWithHashAlg::new(Arc::new(key), hash),
-        )
-        .await?;
-    ensure!(auth.success(), "SSH public-key authentication failed");
+    // Host-key verification has completed before any interactive password prompt.
+    let (auth, method) = match options.authentication {
+        Authentication::PublicKey {
+            identity,
+            passphrase_env,
+        } => {
+            let passphrase = passphrase_env
+                .as_ref()
+                .map(|name| {
+                    std::env::var(name)
+                        .with_context(|| format!("SSH key passphrase variable {name} is not set"))
+                })
+                .transpose()?;
+            let key = load_secret_key(&identity, passphrase.as_deref())
+                .context("Read SSH identity; encrypted keys require --key-passphrase-env")?;
+            let hash = session.best_supported_rsa_hash().await?.flatten();
+            (
+                session
+                    .authenticate_publickey(
+                        &options.user,
+                        PrivateKeyWithHashAlg::new(Arc::new(key), hash),
+                    )
+                    .await?,
+                "public-key",
+            )
+        }
+        Authentication::Password { password } => {
+            let password = match password {
+                Some(password) => password,
+                None => {
+                    let prompt = format!("{}@{} password: ", options.user, options.host);
+                    tokio::task::spawn_blocking(move || rpassword::prompt_password(prompt))
+                        .await
+                        .context("SSH password prompt task failed")?
+                        .context("Read SSH password from terminal")?
+                }
+            };
+            (
+                session
+                    .authenticate_password(&options.user, password)
+                    .await?,
+                "password",
+            )
+        }
+    };
+    if !auth.success() {
+        return Err(AuthenticationError::Rejected { method }.into());
+    }
     let mut channel = session.channel_open_session().await?;
     channel
         .request_x11(true, false, "MIT-MAGIC-COOKIE-1", hex, 0)
@@ -237,11 +289,27 @@ pub async fn connect(options: Options) -> Result<u32> {
     }
     exit.context("Remote command closed without an exit status")
 }
-async fn wait_success(channel: &mut Channel<client::Msg>, message: &str) -> Result<()> {
+async fn wait_success(channel: &mut Channel<client::Msg>, message: &'static str) -> Result<()> {
     tokio::time::timeout(Duration::from_secs(15), async {
-        match channel.wait().await {
-            Some(ChannelMsg::Success) => Ok(()),
-            _ => Err(anyhow!("{message}")),
+        loop {
+            match channel.wait().await {
+                Some(ChannelMsg::Success) => return Ok(()),
+                Some(ChannelMsg::Failure) => return Err(RequestError::Rejected(message).into()),
+                Some(ChannelMsg::Data { data }) => {
+                    std::io::Write::write_all(&mut std::io::stdout().lock(), &data)?;
+                }
+                Some(ChannelMsg::ExtendedData { data, .. }) => {
+                    std::io::Write::write_all(&mut std::io::stderr().lock(), &data)?;
+                }
+                Some(ChannelMsg::ExitStatus { exit_status }) => {
+                    return Err(RequestError::Exited(exit_status).into());
+                }
+                Some(ChannelMsg::Close) | None => {
+                    return Err(RequestError::Closed(message).into());
+                }
+                // Window adjustments and EOF are independent of request replies.
+                _ => {}
+            }
         }
     })
     .await

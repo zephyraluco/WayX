@@ -144,6 +144,20 @@ cargo run --locked -- ssh \
   --xauthority .cache/Xauthority --display 100 --command 'xterm'
 ```
 
+密码登录可直接使用内置 SSH 客户端，无需其他 SSH 软件。在 Windows 的另一个
+PowerShell 中执行（保持 `wayx.cmd` 的本地服务运行）：
+
+```powershell
+.\bin\wayx.exe ssh --host 172.22.2.23 --user jz --password `
+  --known-hosts "$env:USERPROFILE\.ssh\known_hosts" `
+  --xauthority .\Xauthority --display 100 --command "wjtools-arm64"
+```
+
+验证服务器主机密钥后，终端提示输入账号密码，输入不回显。省略 `--identity`
+时默认使用密码登录；`--password` 与 `--identity` 互斥，不提供明文密码命令行参数。
+`--key-passphrase-env` 仅用于私钥解密，需要同时指定 `--identity`。服务器必须
+允许 SSH password 认证；keyboard-interactive/PAM 多轮交互尚未实现。
+
 Linux/macOS 优先连接本地 Unix X11 socket；没有 Unix socket时才尝试回环 TCP，Windows 使用回环 TCP。无需为 Linux 示例开放 X11 TCP 监听。
 
 本地真实 cookie 不交给远端：为 SSH 会话生成独立随机 cookie，验证每条 X11 连接的 setup 请求后，再替换成本地 cookie。错误 cookie、未知/变更的主机密钥会被拒绝。当前不支持主机证书 CA 信任策略。支持 Ed25519、ECDSA、RSA 身份密钥；加密私钥可通过 `--key-passphrase-env VARIABLE_NAME` 指定密码所在的环境变量，避免把密码放进命令参数。

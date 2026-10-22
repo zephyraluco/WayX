@@ -46,10 +46,14 @@ enum Command {
         port: u16,
         #[arg(long)]
         user: String,
-        #[arg(long)]
-        identity: PathBuf,
+        /// Use an OpenSSH private key instead of password authentication.
+        #[arg(long, conflicts_with = "password")]
+        identity: Option<PathBuf>,
+        /// Prompt for the SSH account password without echo (default without --identity).
+        #[arg(long, conflicts_with = "identity")]
+        password: bool,
         /// Name of an environment variable holding the encrypted-key passphrase.
-        #[arg(long)]
+        #[arg(long, requires = "identity")]
         key_passphrase_env: Option<String>,
         #[arg(long)]
         known_hosts: PathBuf,
@@ -177,6 +181,7 @@ fn main() -> Result<()> {
             port,
             user,
             identity,
+            password: _,
             key_passphrase_env,
             known_hosts,
             xauthority,
@@ -188,8 +193,13 @@ fn main() -> Result<()> {
                     host,
                     port,
                     user,
-                    identity,
-                    passphrase_env: key_passphrase_env,
+                    authentication: match identity {
+                        Some(identity) => wayx::ssh::Authentication::PublicKey {
+                            identity,
+                            passphrase_env: key_passphrase_env,
+                        },
+                        None => wayx::ssh::Authentication::Password { password: None },
+                    },
                     known_hosts,
                     xauthority,
                     display,
@@ -202,4 +212,53 @@ fn main() -> Result<()> {
         }
     }
     Ok(())
+}
+
+#[cfg(all(test, feature = "ssh"))]
+mod cli_tests {
+    use super::*;
+
+    fn ssh_args() -> Vec<&'static str> {
+        vec![
+            "wayx",
+            "ssh",
+            "--host",
+            "127.0.0.1",
+            "--user",
+            "test",
+            "--known-hosts",
+            "known_hosts",
+            "--xauthority",
+            "Xauthority",
+            "--command",
+            "xterm",
+        ]
+    }
+    #[test]
+    fn password_login_should_not_require_an_identity_file() {
+        let mut args = ssh_args();
+        args.push("--password");
+        let cli = Cli::try_parse_from(args).expect("Password mode must parse without identity");
+        assert!(matches!(
+            cli.command,
+            Command::Ssh {
+                password: true,
+                identity: None,
+                ..
+            }
+        ));
+        assert!(Cli::try_parse_from(ssh_args()).is_ok());
+    }
+    #[test]
+    fn password_and_identity_should_be_mutually_exclusive() {
+        let mut args = ssh_args();
+        args.extend(["--password", "--identity", "id_ed25519"]);
+        assert!(Cli::try_parse_from(args).is_err());
+    }
+    #[test]
+    fn key_passphrase_should_require_a_private_key() {
+        let mut args = ssh_args();
+        args.extend(["--key-passphrase-env", "TEST_PASSPHRASE"]);
+        assert!(Cli::try_parse_from(args).is_err());
+    }
 }

@@ -12,18 +12,38 @@ use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
     net::TcpListener,
 };
+#[derive(Clone, Copy)]
+enum Scenario {
+    PublicKey,
+    Password,
+    WrongPassword,
+    RejectedCommand,
+}
 struct Remote {
     authorized: PublicKey,
     cookie: String,
+    password_only: bool,
+    reject_exec: bool,
 }
 impl server::Handler for Remote {
     type Error = anyhow::Error;
     async fn auth_publickey(&mut self, user: &str, key: &PublicKey) -> Result<server::Auth> {
-        Ok(if user == "test" && key == &self.authorized {
-            server::Auth::Accept
-        } else {
-            server::Auth::reject()
-        })
+        Ok(
+            if !self.password_only && user == "test" && key == &self.authorized {
+                server::Auth::Accept
+            } else {
+                server::Auth::reject()
+            },
+        )
+    }
+    async fn auth_password(&mut self, user: &str, password: &str) -> Result<server::Auth> {
+        Ok(
+            if self.password_only && user == "test" && password == "loopback-password" {
+                server::Auth::Accept
+            } else {
+                server::Auth::reject()
+            },
+        )
     }
     async fn channel_open_session(
         &mut self,
@@ -58,6 +78,13 @@ impl server::Handler for Remote {
         session: &mut server::Session,
     ) -> Result<()> {
         ensure!(data == b"test-x11", "Unexpected command");
+        // Exercise real encrypted output arriving before the exec acknowledgement.
+        session.data(channel, b"Remote startup output\n".to_vec())?;
+        session.extended_data(channel, 1, b"Remote startup diagnostic\n".to_vec())?;
+        if self.reject_exec {
+            session.channel_failure(channel)?;
+            return Ok(());
+        }
         session.channel_success(channel)?;
         let handle = session.handle();
         let cookie = self.cookie.clone();
@@ -96,11 +123,26 @@ fn encrypted_x11_cookie_substitution_and_exit_status() -> Result<()> {
     // Repeatedly exercise real TCP teardown; Windows exposed a shutdown race
     // which a single fast loopback session often misses.
     for _ in 0..10 {
-        loopback_roundtrip()?;
+        loopback_roundtrip(Scenario::PublicKey)?;
     }
     Ok(())
 }
-fn loopback_roundtrip() -> Result<()> {
+#[test]
+fn password_authentication_should_forward_x11_and_preserve_exit_status() -> Result<()> {
+    for _ in 0..5 {
+        loopback_roundtrip(Scenario::Password)?;
+    }
+    Ok(())
+}
+#[test]
+fn incorrect_password_should_fail_without_forwarding_x11() -> Result<()> {
+    loopback_roundtrip(Scenario::WrongPassword)
+}
+#[test]
+fn explicit_exec_failure_should_still_fail_after_early_output() -> Result<()> {
+    loopback_roundtrip(Scenario::RejectedCommand)
+}
+fn loopback_roundtrip(scenario: Scenario) -> Result<()> {
     tokio::runtime::Runtime::new()?.block_on(async {
         tokio::time::timeout(Duration::from_secs(20), async {
             let dir = tempfile::tempdir()?;
@@ -136,8 +178,10 @@ fn loopback_roundtrip() -> Result<()> {
                 auth.extend_from_slice(field);
             }
             std::fs::write(&xauthority, auth)?;
+            let (connected, mut connection) = tokio::sync::oneshot::channel();
             let destination = tokio::spawn(async move {
                 let (mut stream, _) = local.accept().await?;
+                let _ = connected.send(());
                 let mut setup = [0; 48];
                 stream.read_exact(&mut setup).await?;
                 ensure!(
@@ -160,25 +204,65 @@ fn loopback_roundtrip() -> Result<()> {
                     Remote {
                         authorized,
                         cookie: String::new(),
+                        password_only: matches!(
+                            scenario,
+                            Scenario::Password | Scenario::WrongPassword
+                        ),
+                        reject_exec: matches!(scenario, Scenario::RejectedCommand),
                     },
                 )
                 .await?
                 .await?;
                 Ok::<_, anyhow::Error>(())
             });
-            let status = wayx::ssh::connect(wayx::ssh::Options {
+            let result = wayx::ssh::connect(wayx::ssh::Options {
                 host: "127.0.0.1".into(),
                 port,
                 user: "test".into(),
-                identity: key_path,
-                passphrase_env: None,
+                authentication: match scenario {
+                    Scenario::Password => wayx::ssh::Authentication::Password {
+                        password: Some("loopback-password".into()),
+                    },
+                    Scenario::WrongPassword => wayx::ssh::Authentication::Password {
+                        password: Some("not-the-loopback-password".into()),
+                    },
+                    _ => wayx::ssh::Authentication::PublicKey {
+                        identity: key_path,
+                        passphrase_env: None,
+                    },
+                },
                 known_hosts,
                 xauthority,
                 display,
                 command: "test-x11".into(),
             })
-            .await
-            .context("SSH client session")?;
+            .await;
+            if matches!(
+                scenario,
+                Scenario::WrongPassword | Scenario::RejectedCommand
+            ) {
+                let error = result.expect_err("The request must be rejected");
+                let expected = if matches!(scenario, Scenario::WrongPassword) {
+                    "SSH password authentication failed"
+                } else {
+                    "SSH server rejected remote command"
+                };
+                ensure!(
+                    error.to_string().contains(expected),
+                    "Unexpected failure: {error}"
+                );
+                ensure!(!error.to_string().contains("loopback-password"));
+                ensure!(
+                    tokio::time::timeout(Duration::from_millis(50), &mut connection)
+                        .await
+                        .is_err(),
+                    "Rejected request reached local X11"
+                );
+                destination.abort();
+                remote.abort();
+                return Ok(());
+            }
+            let status = result.context("SSH client session")?;
             ensure!(status == 0, "Remote command failed");
             destination.await?.context("Local X11 destination")?;
             // All application bytes, cookie substitution and exit status were
