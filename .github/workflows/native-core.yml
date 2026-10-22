@@ -20,12 +20,21 @@ jobs:
           cargo test --locked --test xlibre --test rootless --test window_manager -- --ignored --nocapture
       - name: Verify real Xlib XIM interoperability
         run: |
-          # Restore full locale resources even when the runner's preinstalled
-          # Xlib has been trimmed. This is a test-client dependency only.
-          brew reinstall libx11
           export XLOCALEDIR="$(brew --prefix libx11)/share/X11/locale"
           test -f "$XLOCALEDIR/locale.alias"
           test -f "$XLOCALEDIR/en_US.UTF-8/XLC_LOCALE"
+          # Homebrew 1.8.13 installs Darwin locale modules as *.2.so,
+          # while Xlib's dynamic locale loader asks for *.so.2.
+          # Stage aliases privately; leave the installed library untouched.
+          modules="$(brew --prefix libx11)/lib/X11/locale"
+          if [ -d "$modules" ]; then
+            export XLOCALELIBDIR="$RUNNER_TEMP/wayx-xlib-locales"
+            cp -R "$modules" "$XLOCALELIBDIR"
+            for module in "$XLOCALELIBDIR"/common/*.2.so; do
+              [ -f "$module" ] || continue
+              ln -s "$(basename "$module")" "${module%.2.so}.so.2"
+            done
+          fi
           pkg-config --modversion x11
           cc -std=c11 -Wall -Wextra -Werror $(pkg-config --cflags x11) tests/xim-client.c $(pkg-config --libs x11) -o /tmp/wayx-xim-client
           otool -L /tmp/wayx-xim-client
