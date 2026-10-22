@@ -40,7 +40,7 @@ Rust 内部 X11 连接同时驱动 Selection 与 WM_S0/SubstructureRedirect，�
 
 winit 物理键转换成显式 USB HID usage，再由 C DDX 映射为 evdev XKB keycode。没有依赖 Rust enum 序号或直接转型为平台扫描码。鼠标坐标按 framebuffer/原生窗口比例转换；C DDX 调用 XLibre 的 QueuePointerEvents/QueueKeyboardEvents。
 
-按键和鼠标按钮保持有序；只合并相邻、同窗口的 motion。队列有 4096 条上限，溢出明确报错，不静默丢掉 key-up。失焦释放已按下的键和按钮。物理键自动重复交给 XKB。滚轮当前映射为 X11 按钮 4–7，尚未累积亚单位触控板滚动。
+按键和鼠标按钮保持有序；只合并相邻、同窗口的 motion。队列有 4096 条上限，溢出明确报错，不静默丢掉 key-up。失焦释放已按下的键和按钮。物理键自动重复交给 XKB。滚动以独立的 XI2 水平/垂直相对 valuator 传入，保留小数增量；XLibre 自动累积并为旧客户端模拟按钮 4–7，不再重复注入滚轮按钮。每条事件每轴限制为 32 行，以限制异常大输入造成的按钮事件数量。操作系统提供的惯性与自然滚动方向原样保留。
 
 原生 IME Commit/Preedit 直接进入 Rust XIM 服务（`@im=wayx`），与 Selection/WM
 共享内部 X11 连接和事件循环，不再投递到 DDX 不处理的 TEXT 队列。XIM 协议和

@@ -274,3 +274,7 @@ WAYX_TEST_CORE=$PWD/build/xlibre/hw/wayx/libwayx-xserver.so \
 WAYX_TEST_XIM_CLIENT=/tmp/wayx-xim-client \
 cargo test --locked --test ime -- --ignored --nocapture
 ```
+
+## 平滑滚动
+
+触控板的小数滚动通过 XI2 连续滚动轴传给应用；只支持旧式滚轮的应用由 XLibre 累积后接收按钮 4–7。支持水平、垂直、方向反转以及操作系统产生的惯性滚动，不额外合成惯性。真实核心测试验证两轴小数、反转、旧客户端按钮数量和指针位置不变。Windows/macOS 物理触控板手感仍需人工验收。

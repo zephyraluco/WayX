@@ -176,6 +176,7 @@ fn xlibre_draw_and_input_roundtrip() -> Result<()> {
             key && button,
             "Expected X11 keycode 38 and button 1, got key={key}, button={button}"
         );
+        scroll_roundtrip(backend.clone(), &conn, win, &client_display)?;
         #[cfg(feature = "desktop")]
         selection_roundtrip(backend.clone(), &client_display)?;
         conn.destroy_window(win)?.check()?;
@@ -349,5 +350,87 @@ fn selection_roundtrip(backend: wayx::bridge::SharedBackend, display: &str) -> R
             "X11 -> native clipboard mismatch"
         );
     }
+    Ok(())
+}
+
+fn scroll_roundtrip(
+    backend: wayx::bridge::SharedBackend,
+    core: &x11rb::rust_connection::RustConnection,
+    window: u32,
+    display: &str,
+) -> Result<()> {
+    use x11rb::protocol::xinput::{self, ConnectionExt as _, DeviceClassData, XIEventMask};
+    let (xi, _) = x11rb::connect(Some(display))?;
+    xi.xinput_xi_query_version(2, 1)?.reply()?;
+    let devices = xi.xinput_xi_query_device(0u16)?.reply()?;
+    let pointer = devices
+        .infos
+        .iter()
+        .find(|device| device.name == b"Xvfb mouse")
+        .context("Missing WayX pointer")?;
+    let scroll: Vec<_> = pointer
+        .classes
+        .iter()
+        .filter_map(|class| match &class.data {
+            DeviceClassData::Scroll(scroll) => Some(scroll),
+            _ => None,
+        })
+        .collect();
+    ensure!(scroll.len() == 2, "Missing XI2 smooth-scroll axes");
+    xi.xinput_xi_select_events(
+        window,
+        &[xinput::EventMask {
+            deviceid: 1,
+            mask: vec![XIEventMask::MOTION],
+        }],
+    )?
+    .check()?;
+    xi.flush()?;
+    while core.poll_for_event()?.is_some() {}
+    for (dx, dy, vertical, horizontal) in [(-0.125, 0.125, 4, 6), (0.125, -0.125, 5, 7)] {
+        for _ in 0..16 {
+            backend.lock().unwrap().push_input(InputEvent {
+                kind: event::SCROLL,
+                window: 1,
+                x: dx,
+                y: dy,
+                ..Default::default()
+            })?;
+            // Let XLibre publish each fractional sample, rather than only a final coalesced motion.
+            std::thread::sleep(Duration::from_millis(12));
+        }
+        let deadline = Instant::now() + Duration::from_secs(3);
+        let (mut up, mut left, mut fractional) = (0, 0, false);
+        while Instant::now() < deadline {
+            while let Some(event) = core.poll_for_event()? {
+                if let Event::ButtonPress(event) = event {
+                    match event.detail {
+                        n if n == vertical => up += 1,
+                        n if n == horizontal => left += 1,
+                        _ => {}
+                    }
+                }
+            }
+            while let Some(event) = xi.poll_for_event()? {
+                if let Event::XinputMotion(event) = event {
+                    fractional |= event.axisvalues.iter().any(|value| value.frac != 0);
+                }
+            }
+            if up == 2 && left == 2 && fractional {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        ensure!(
+            up == 2 && left == 2,
+            "Fractional scroll lost or duplicated: up={up}, left={left}"
+        );
+        ensure!(fractional, "XI2 did not deliver fractional valuators");
+    }
+    let point = core.query_pointer(window)?.reply()?;
+    ensure!(
+        point.root_x == 30 && point.root_y == 40,
+        "Scrolling moved the pointer"
+    );
     Ok(())
 }

@@ -107,10 +107,14 @@ static CARD32 poll_backend(OsTimerPtr unused,CARD32 now,void *closure) {
             break;
         }
         case WAYX_SCROLL: {
-            int vertical=event.y>0?4:5,horizontal=event.x>0?7:6;
-            int ny=(int)fmin(fabs(event.y),32),nx=(int)fmin(fabs(event.x),32);
-            for(int i=0;i<ny;i++) {button(vertical,1);button(vertical,0);}
-            for(int i=0;i<nx;i++) {button(horizontal,1);button(horizontal,0);} break;
+            ValuatorMask *mask=valuator_mask_new(4);
+            /* Match the previous 32-line per-event bound without truncating
+             * fractional movement. Direction follows winit, including the OS
+             * natural-scrolling preference. Do not synthesize buttons twice. */
+            valuator_mask_set_double(mask,2,fmax(-32.0,fmin(event.x,32.0)));
+            valuator_mask_set_double(mask,3,fmax(-32.0,fmin(event.y,32.0)));
+            QueuePointerEvents(wayx_pointer,MotionNotify,0,POINTER_RELATIVE,mask);
+            valuator_mask_free(&mask);break;
         }
         case WAYX_FOCUS:
             if (!event.flags) release_input();
