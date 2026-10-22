@@ -37,8 +37,32 @@ extern Bool SmartScheduleSignalEnable;
 #include "wayx-rootless.h"
 #include "wayx-randr.h"
 
+/* One X screen with independently addressable RandR outputs, not separate
+ * DISPLAY screens. Coordinates are in the shared desktop framebuffer. */
+static vfbCrtcInfo monitors[16];
+static unsigned monitor_count;
+static Bool monitor_argument(const char *text,vfbCrtcInfoPtr monitor) {
+    long values[4];const char separators[]={'x','+','+','\0'};
+    for (unsigned i=0;i<4;i++) {
+        if (*text<'0' || *text>'9') return FALSE;
+        char *end;errno=0;
+        values[i]=strtol(text,&end,10);
+        if (errno || values[i]<0 || values[i]>16384 || *end!=separators[i]) return FALSE;
+        text=end+(i<3);
+    }
+    if (!values[0] || !values[1] || values[0]+values[2]>16384 || values[1]+values[3]>16384)
+        return FALSE;
+    *monitor=(vfbCrtcInfo){.width=values[0],.height=values[1],.x=values[2],.y=values[3],.numOutputs=1};
+    return TRUE;
+}
+
 int ddxProcessArgument(int argc,char **argv,int index) {
     if (!strcmp(argv[index],"-wayx-rootless")) {rootless=TRUE;return 1;}
+    if (!strcmp(argv[index],"-wayx-monitor")) {
+        if (index+1>=argc || monitor_count>=16 || !monitor_argument(argv[index+1],&monitors[monitor_count]))
+            FatalError("WayX: -wayx-monitor expects WxH+X+Y (nonnegative desktop coordinates, at most 16 outputs)\n");
+        monitor_count++;return 2;
+    }
     return WayxVfbProcessArgument(argc,argv,index);
 }
 
@@ -205,6 +229,20 @@ void InitOutput(int argc,char **argv) {
 #ifdef GLXEXT
     wayx_glx_init();
 #endif
+    if (monitor_count) {
+        vfbScreenInfoPtr fb=vfbNumScreens?&vfbScreens[0]:&defaultScreenInfo;
+        unsigned width=0,height=0;
+        for (unsigned i=0;i<monitor_count;i++) {
+            unsigned right=monitors[i].x+monitors[i].width,bottom=monitors[i].y+monitors[i].height;
+            if (right>width) width=right;
+            if (bottom>height) height=bottom;
+        }
+        if ((uint64_t)width*height*4>256u*1024u*1024u)
+            FatalError("WayX monitor layout exceeds the 256 MiB framebuffer limit\n");
+        fb->width=width;fb->height=height;
+        vfbSetCrtcInfo(fb,monitor_count,1,1);
+        memcpy(fb->crtcs,monitors,monitor_count*sizeof(monitors[0]));
+    }
     WayxVfbInitOutput(argc,argv);
     if (vfbNumScreens!=1) FatalError("WayX currently supports one X screen\n");
     if (!AddCallback(&PostInitRootWindowCallback,attach_screen,NULL)) FatalError("WayX failed to register screen callback\n");

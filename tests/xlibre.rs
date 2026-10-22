@@ -33,6 +33,7 @@ fn xlibre_draw_and_input_roundtrip() -> Result<()> {
     let backend = Arc::new(Mutex::new(Backend::default()));
     let shared = backend.clone();
     let display_arg = display.clone();
+    let monitors = std::env::var_os("WAYX_TEST_MONITORS").is_some();
     let worker = std::thread::spawn(move || -> Result<i32> {
         let library = unsafe { libloading::Library::new(core) }?;
         let run = unsafe {
@@ -43,7 +44,7 @@ fn xlibre_draw_and_input_roundtrip() -> Result<()> {
                 *mut *mut std::ffi::c_char,
             ) -> i32>(b"wayx_xserver_run\0")
         }?;
-        let args: Vec<_> = [
+        let mut args: Vec<_> = [
             "XWayX",
             &display_arg,
             "-screen",
@@ -63,6 +64,17 @@ fn xlibre_draw_and_input_roundtrip() -> Result<()> {
         .iter()
         .map(|s| CString::new(*s).unwrap())
         .collect();
+        if monitors {
+            args.extend(
+                [
+                    "-wayx-monitor",
+                    "320x240+0+0",
+                    "-wayx-monitor",
+                    "320x240+320+0",
+                ]
+                .map(|s| CString::new(s).unwrap()),
+            );
+        }
         let mut pointers: Vec<_> = args.iter().map(|s| s.as_ptr().cast_mut()).collect();
         pointers.push(std::ptr::null_mut());
         let mut handle = Handle(shared);
@@ -117,8 +129,8 @@ fn xlibre_draw_and_input_roundtrip() -> Result<()> {
         wait_for(|| {
             let b = backend.lock().unwrap();
             let fb = &b.windows[&1].framebuffer;
-            let green = (25 * 320 + 15) * 4;
-            let red = (30 * 320 + 40) * 4;
+            let green = (25 * fb.width as usize + 15) * 4;
+            let red = (30 * fb.width as usize + 40) * 4;
             fb.pixels[green..green + 4] == [0, 255, 0, 255]
                 && fb.pixels[red..red + 4] == [0, 0, 255, 255]
         })?;
@@ -179,7 +191,11 @@ fn xlibre_draw_and_input_roundtrip() -> Result<()> {
         );
         glx_negotiation(&conn, win)?;
         scroll_roundtrip(backend.clone(), &conn, win, &client_display)?;
-        randr_resize_roundtrip(backend.clone(), &conn, root, &client_display)?;
+        if monitors {
+            monitors_roundtrip(backend.clone(), &conn, root)?;
+        } else {
+            randr_resize_roundtrip(backend.clone(), &conn, root, &client_display)?;
+        }
         #[cfg(feature = "desktop")]
         selection_roundtrip(backend.clone(), &client_display)?;
         conn.destroy_window(win)?.check()?;
@@ -580,5 +596,96 @@ fn glx_negotiation(conn: &x11rb::rust_connection::RustConnection, window: u32) -
             .is_err(),
         "Unimplemented indirect rendering was accepted"
     );
+    Ok(())
+}
+
+fn monitors_roundtrip(
+    backend: wayx::bridge::SharedBackend,
+    conn: &x11rb::rust_connection::RustConnection,
+    root: u32,
+) -> Result<()> {
+    use x11rb::protocol::randr::{ConnectionExt as _, Rotation, SetConfig};
+    conn.randr_query_version(1, 5)?.reply()?;
+    let resources = conn.randr_get_screen_resources_current(root)?.reply()?;
+    ensure!(resources.crtcs.len() == 2 && resources.outputs.len() == 2);
+    for (i, id) in resources.crtcs.iter().enumerate() {
+        let crtc = conn.randr_get_crtc_info(*id, 0)?.reply()?;
+        ensure!((crtc.x, crtc.y, crtc.width, crtc.height) == (i as i16 * 320, 0, 320, 240));
+    }
+    let monitors = conn.randr_get_monitors(root, true)?.reply()?;
+    ensure!(
+        monitors.monitors.len() == 2,
+        "RandR does not expose two active monitors"
+    );
+    conn.randr_set_output_primary(root, resources.outputs[1])?
+        .check()?;
+    ensure!(conn.randr_get_output_primary(root)?.reply()?.output == resources.outputs[1]);
+    let window = conn.generate_id()?;
+    conn.create_window(
+        24,
+        window,
+        root,
+        350,
+        30,
+        40,
+        40,
+        0,
+        WindowClass::INPUT_OUTPUT,
+        0,
+        &CreateWindowAux::new().background_pixel(0x0000ff),
+    )?
+    .check()?;
+    conn.map_window(window)?.check()?;
+    wait_for(|| {
+        let b = backend.lock().unwrap();
+        let fb = &b.windows[&1].framebuffer;
+        let offset = (40 * fb.width as usize + 360) * 4;
+        fb.pixels.get(offset..offset + 4) == Some(&[255, 0, 0, 255])
+    })?;
+    backend.lock().unwrap().push_input(InputEvent {
+        kind: event::MOTION,
+        window: 1,
+        x: 360.0,
+        y: 40.0,
+        ..Default::default()
+    })?;
+    wait_for(|| {
+        conn.query_pointer(root)
+            .ok()
+            .and_then(|c| c.reply().ok())
+            .is_some_and(|p| p.root_x == 360 && p.root_y == 40)
+    })?;
+    conn.configure_window(window, &ConfigureWindowAux::new().x(20).y(30))?
+        .check()?;
+    ensure!(conn.get_geometry(window)?.reply()?.x == 20);
+    let second = conn.randr_get_crtc_info(resources.crtcs[1], 0)?.reply()?;
+    ensure!(
+        conn.randr_set_crtc_config(resources.crtcs[1], 0, 0, 0, 0, 0, Rotation::ROTATE0, &[])?
+            .reply()?
+            .status
+            == SetConfig::SUCCESS
+    );
+    ensure!(conn.randr_get_monitors(root, true)?.reply()?.monitors.len() == 1);
+    conn.randr_set_screen_size(root, 320, 240, 85, 64)?
+        .check()?;
+    conn.randr_set_screen_size(root, 640, 240, 169, 64)?
+        .check()?;
+    ensure!(
+        conn.randr_set_crtc_config(
+            resources.crtcs[1],
+            0,
+            0,
+            320,
+            0,
+            second.mode,
+            Rotation::ROTATE0,
+            &[resources.outputs[1]]
+        )?
+        .reply()?
+        .status
+            == SetConfig::SUCCESS
+    );
+    ensure!(conn.randr_get_monitors(root, true)?.reply()?.monitors.len() == 2);
+    conn.destroy_window(window)?.check()?;
     Ok(())
 }

@@ -291,6 +291,25 @@ Rootful 桌面窗口调整大小时，单输出 X 屏幕会重建帧缓冲并更
 验证覆盖原生窗口 resize → X root 几何变化 → wgpu 实际像素，以及远端 RandR
 放大、缩小、模式/事件/新连接尺寸和越界拒绝。Windows/macOS 协议验收见原生 CI。
 
+## 多屏布局
+
+一个 X 屏幕可配置最多 16 个独立 RandR 输出。重复传入 `-wayx-monitor WxH+X+Y`，
+核心按所有输出的包围区域分配桌面；坐标非负，允许不同尺寸、垂直排列或镜像重叠。
+例如两个并排的 1920×1080 输出：
+
+```powershell
+.\wayx.cmd --rootless -- :100 -screen 0 3840x1080x24 `
+  -wayx-monitor 1920x1080+0+0 -wayx-monitor 1920x1080+1920+0 `
+  -listen tcp -nolisten local -auth .\Xauthority
+```
+
+远端可用 `xrandr` 查询 `screen`、`screen_1` 等输出、设置主输出及调整布局/启停输出。
+这是共享桌面的多个输出，不是 `:100.0`、`:100.1` 多个独立 X 屏幕。
+Rootless 保留窗口在整个桌面内的坐标；协议测试覆盖第二输出绘图、指针、窗口跨屏移动、
+主输出、输出关闭/重新启用及屏幕重建。Linux 原生窗口测试检查第二输出位置。
+目前需要显式配置；尚未自动同步宿主显示器的插拔、排列、负坐标和独立缩放比例。
+Wayland/macOS 全局定位限制仍适用。
+
 ## OpenGL / GLX 与 RViz
 
 WayX 已提供 XLibre GLX 1.4 的 visual、FBConfig、drawable 与 direct-context 协商。
@@ -329,7 +348,7 @@ Ubuntu 16.04 的 OGRE 1.9 也通过实际场景绘制、回读及 WayX 像素检
 ```
 
 3D 运算消耗远端 CPU，动态图像会占用传输带宽。OGRE 回归不等同于特定 ROS Kinetic/
-RViz 安装的实机验收；该环境还需按上述命令验证。多屏、透明
+RViz 安装的实机验收；该环境还需按上述命令验证。透明
 ARGB、服务端间接 OpenGL 和硬件 DRI 仍属于未完成的显示扩展。
 
 Linux 渲染验证（需 Mesa、GL/X11 开发包及 `libogre-1.12-dev`）：

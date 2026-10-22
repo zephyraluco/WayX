@@ -18,6 +18,7 @@ jobs:
         run: |
           export WAYX_TEST_CORE="$(cat build/xlibre/wayx-core-path.txt)"
           cargo test --locked --test xlibre --test rootless --test window_manager -- --ignored --nocapture
+          WAYX_TEST_MONITORS=1 cargo test --locked --test xlibre -- --ignored --nocapture
       - name: Verify real Xlib XIM interoperability
         run: |
           export XLOCALEDIR="$(brew --prefix libx11)/share/X11/locale"
@@ -132,6 +133,10 @@ jobs:
           $env:WAYX_TEST_CORE = (Get-Content build/xlibre/wayx-core-path.txt).Trim()
           cargo test --locked --test xlibre --test rootless --test window_manager -- --ignored --nocapture
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $env:WAYX_TEST_MONITORS = "1"
+          cargo test --locked --test xlibre -- --ignored --nocapture
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          Remove-Item Env:WAYX_TEST_MONITORS
       - name: Build release client
         timeout-minutes: 15
         shell: pwsh

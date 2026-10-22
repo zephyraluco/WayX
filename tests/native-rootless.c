@@ -82,6 +82,13 @@ int main(int argc,char **argv) {
         pause_poll();
     }
     if(geometry.x!=110 || geometry.y!=120 || geometry.width!=160 || geometry.height!=130) {fprintf(stderr,"Native geometry did not reach remote window: %d,%d %dx%d\n",geometry.x,geometry.y,geometry.width,geometry.height);return 1;}
+    XMoveWindow(remote,b,700,50);XFlush(remote);
+    for(int i=0;i<500;i++) {
+        XGetWindowAttributes(host,native_b,&geometry);
+        if(geometry.x==700 && geometry.y==50) break;
+        pause_poll();
+    }
+    if(geometry.x!=700 || geometry.y!=50) {fputs("Second-output window position was not preserved\n",stderr);return 1;}
     close_native(host,native_a);
     int close_received=0;
     for(int i=0;i<500 && named_window(host,"WayX native A");i++) {

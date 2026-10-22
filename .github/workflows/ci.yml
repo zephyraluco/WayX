@@ -50,6 +50,7 @@ jobs:
       - run: bash scripts/build-xlibre.sh
       - run: cargo build --locked --release && bash scripts/test-c-bridge.sh
       - run: WAYX_TEST_CORE=$PWD/build/xlibre/hw/wayx/libwayx-xserver.so cargo test --locked --test xlibre -- --ignored --nocapture
+      - run: WAYX_TEST_MONITORS=1 WAYX_TEST_CORE=$PWD/build/xlibre/hw/wayx/libwayx-xserver.so cargo test --locked --test xlibre -- --ignored --nocapture
       - run: WAYX_TEST_CORE=$PWD/build/xlibre/hw/wayx/libwayx-xserver.so cargo test --locked --test rootless -- --ignored --nocapture
       - run: WAYX_TEST_CORE=$PWD/build/xlibre/hw/wayx/libwayx-xserver.so cargo test --locked --test window_manager -- --ignored --nocapture
       - name: Verify real Xlib XIM Unicode, preedit and focus routing

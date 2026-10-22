@@ -30,6 +30,15 @@ Damage 记录在屏幕 Pixmap 上。8 毫秒定时器将受损矩形和实际 st
 
 内存上限：单帧缓冲 256 MiB，所有窗口总计 512 MiB、最多 1024 个窗口，单轴不超过 16384。显卡自身能力可能更低。Rust 的窗口模型维护 ID、父子关系、标题、可见性、焦点和递归销毁，默认 DDX 注册整个 X 屏幕；`--rootless` 则由 Composite 手动重定向根窗口的子窗口，将每个顶层窗口的独立 Pixmap 注册到 Rust 窗口模型。Damage 相对 Pixmap 的坐标经边框偏移校正后上传；嵌套子窗口保留在同一 Pixmap 中。窗口销毁和 Pixmap 重建会解除 Damage 跟踪，避免继续访问已释放的服务器对象。
 
+## RandR 屏幕与输出
+
+DDX 替换 VFB 的尺寸回调，为每次改变分配新的有界软件帧缓冲，保留重叠像素，
+原地更新屏幕 Pixmap 头部及 root clip，刷新 Rust 帧缓冲和 RandR 通知后释放旧存储。
+默认内存模式支持动态尺寸；文件映射模式不支持。Native 单输出桌面 resize 同时更新
+输出模式；多输出桌面由 RandR 客户端管理布局，避免宿主 resize 隐式重排多个输出。
+`-wayx-monitor WxH+X+Y` 定义最多 16 个启动输出并激活相应 CRTC；屏幕尺寸由布局
+包围区域决定。宿主显示器自动同步及每屏 DPI 尚未实现。
+
 ## 客户端软件 OpenGL
 
 DDX 注册 client-only GLX provider，提供 24-bit XRGB、单/双缓冲及 depth/stencil

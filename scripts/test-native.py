@@ -76,7 +76,8 @@ with tempfile.TemporaryDirectory(prefix="wayx-native-") as temp:
                                 "tests/native-rootless.c", *flags, "-o", str(client)], check=True)
                 rootless = subprocess.Popen([binary, "serve", "--rootless", "--core", str(args.core.resolve()),
                                              "--", f":{core_display}", "-screen", "0", "1280x800x24",
-                                             "-crtcs", "1@1280x800", "-nolisten", "tcp", "-auth", str(auth)], env=env)
+                                             "-wayx-monitor", "640x800+0+0", "-wayx-monitor", "640x800+640+0",
+                                             "-nolisten", "tcp", "-auth", str(auth)], env=env)
                 try:
                     client_env = env.copy()
                     client_env["XAUTHORITY"] = str(auth)
