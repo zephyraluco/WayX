@@ -44,8 +44,6 @@ fn glx_should_render_modern_software_opengl_over_tcp() -> Result<()> {
             "1@640x480",
             "-listen",
             "tcp",
-            "-extension",
-            "MIT-SHM",
             "+iglx",
             "-ac",
         ]

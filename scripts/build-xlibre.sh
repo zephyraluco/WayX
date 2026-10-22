@@ -34,7 +34,7 @@ python3 "$project_root/scripts/prepare-glx-client.py" "$source_dir" "$gl_headers
 # Native dependencies must be available through pkg-config; no authentication or
 # package-signature checks are disabled. Let pkg-config locate native XKB data.
 args=(--buildtype=debugoptimized -Dxorg=false -Dxnest=false -Dxwin=false -Dxquartz=false
-      -Dxvfb=true -Dglamor=false -Dglx=true -Dglx_dri=false -Dgbm=false -Ddrm=false
+      -Dxvfb=true -Dmitshm=false -Dglamor=false -Dglx=true -Dglx_dri=false -Dgbm=false -Ddrm=false
       -Ddri1=false -Ddri2=false -Ddri3=false -Dudev=false -Dudev_kms=false
       -Dseatd_libseat=false -Dxselinux=false -Dxdmcp=false -Dinput_thread=false
       -Dxdm-auth-1=false -Dtests=false -Ddefault_font_path=built-ins)
@@ -47,7 +47,6 @@ args+=("-Dxkb_output_dir=$xkb_output")
 case "$(uname -s)" in
   MINGW*|MSYS*)
     python3 "$project_root/scripts/patch-xlibre-windows.py" "$source_dir"
-    args+=(-Dmitshm=false)
     ;;
 esac
 if [[ -f "$build_dir/build.ninja" ]]; then

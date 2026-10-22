@@ -439,6 +439,10 @@ fn scroll_roundtrip(
 
 fn glx_negotiation(conn: &x11rb::rust_connection::RustConnection, window: u32) -> Result<()> {
     use x11rb::protocol::glx::ConnectionExt as _;
+    ensure!(
+        !conn.query_extension(b"MIT-SHM")?.reply()?.present,
+        "Network display must not advertise host shared memory"
+    );
     let version = conn.glx_query_version(1, 4)?.reply()?;
     ensure!(
         version.major_version == 1 && version.minor_version >= 4,

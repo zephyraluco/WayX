@@ -43,7 +43,8 @@ GLX 协议版本或 wgpu 的能力当作应用的 OpenGL 能力。
 GL dispatch 时意外执行绘图。此路径不提供服务端间接 GL、DRI2/DRI3 或宿主 GL GPU
 加速。帧缓冲和 C ABI 保持现有约束，新增 GLX provider 不改变 ABI v2。
 
-回归包括关闭 MIT-SHM 后的 TCP Mesa VBO 绘制、OpenGL 像素回读、OGRE 实际绘制，
+核心在所有平台禁用 MIT-SHM，避免 SSH/回环转发被误判为可访问宿主共享内存。
+回归包括无 MIT-SHM 的 TCP Mesa VBO 绘制、OpenGL 像素回读、OGRE 实际绘制，
 分别验证 rootful/rootless 的 Damage 像素；原生窗口测试另检查 wgpu 呈现的颜色。
 当前不据此宣称特定远端 ROS Kinetic/RViz 安装已完成实机验收。
 

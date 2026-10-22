@@ -289,7 +289,7 @@ X11 请求传回 WayX，再由现有 Damage/wgpu 路径呈现。GLX 协议版本
 
 服务端间接 OpenGL、宿主 GPU 的 GLX 加速和 DRI2/DRI3 尚未实现；不接受服务端
 间接上下文，即使手动传入 `+iglx`。运行应用时应取消 `LIBGL_ALWAYS_INDIRECT`，
-使用 Mesa 的客户端软件渲染路径。此方式不依赖跨机器共享内存。
+使用 Mesa 的客户端软件渲染路径。WayX 核心不启用 MIT-SHM，避免远端应用误用宿主共享内存；图像走普通 X11 传输。
 
 更新**完整运行包**并重新启动本地 XLibre 后，可先用同一 SSH 命令运行：
 
