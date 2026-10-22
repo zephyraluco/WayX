@@ -94,7 +94,14 @@ jobs:
         run: |
           export WAYX_WINDOWS_DEPS="$GITHUB_WORKSPACE/build/windows-installed/x64-windows"
           bash scripts/build-windows-core.sh
-      - name: Exercise protocol and actual Win32 presentation
+      - name: Build protocol test binaries
+        timeout-minutes: 10
+        shell: pwsh
+        run: |
+          cargo test --locked --test xlibre --test rootless --test window_manager --no-run
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Exercise real Windows X11 protocol
+        timeout-minutes: 3
         env:
           WAYX_MSYS2_ROOT: ${{ steps.msys2.outputs.msys2-location }}
         shell: pwsh
@@ -103,11 +110,24 @@ jobs:
           $env:WAYX_TEST_CORE = (Get-Content build/xlibre/wayx-core-path.txt).Trim()
           cargo test --locked --test xlibre --test rootless --test window_manager -- --ignored --nocapture
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Build release client
+        timeout-minutes: 15
+        shell: pwsh
+        run: |
           cargo build --locked --release
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          target/release/wayx.exe serve --core $env:WAYX_TEST_CORE --frames 3 -- :196 -screen 0 640x480x24 -crtcs 1@640x480 -listen tcp -ac
+      - name: Exercise actual Win32 presentation
+        timeout-minutes: 3
+        env:
+          WAYX_MSYS2_ROOT: ${{ steps.msys2.outputs.msys2-location }}
+        shell: pwsh
+        run: |
+          $env:PATH = "$pwd/build/windows-native/bin;$pwd/build/windows-installed/x64-windows/bin;$env:WAYX_MSYS2_ROOT/ucrt64/bin;" + $env:PATH
+          $core = (Get-Content build/xlibre/wayx-core-path.txt).Trim()
+          target/release/wayx.exe serve --core $core --frames 3 -- :196 -screen 0 640x480x24 -crtcs 1@640x480 -listen tcp -ac
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - name: Stage and exercise relocated core runtime
+        timeout-minutes: 5
         env:
           WAYX_MSYS2_ROOT: ${{ steps.msys2.outputs.msys2-location }}
         shell: pwsh
