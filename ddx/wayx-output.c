@@ -13,6 +13,7 @@
 #include "wayx.h"
 #include "dix/input_priv.h"
 #include "dix/resource_priv.h"
+#include "dix/screen_hooks_priv.h"
 #include "dix/window_priv.h"
 #include "windowstr.h"
 #include "damage.h"
@@ -267,8 +268,21 @@ static void register_backend(void) {
         FatalError("WayX could not register output batch handler\n");
     handlers_registered=TRUE;
 }
+static void detach_screen(CallbackListPtr *list,ScreenPtr closing,void *data) {
+    /* Close callbacks run newest first. Unwrap before Composite/Damage release
+     * their screen privates, and before dixFreeScreen frees the Screen itself. */
+    dixScreenUnhookClose(closing,detach_screen);
+    if (input_socket>=0) {RemoveNotifyFd(input_socket);input_socket=-1;}
+    if (handlers_registered) {RemoveBlockAndWakeupHandlers(backend_block,backend_wakeup,NULL);handlers_registered=FALSE;}
+    if (rootless) remove_window_hooks();
+    if (damage) {DamageDestroy(damage);damage=NULL;}
+    while (wayx_windows) {WayxWindow *entry=wayx_windows;wayx_windows=entry->next;remove_window(entry);}
+    api->window_destroy(backend,1);
+    screen=NULL;
+}
 static void attach_screen(CallbackListPtr *list,void *closure,void *data) {
     screen=data;
+    dixScreenHookClose(screen,detach_screen);
     root_resize_ack=0;root_geometry_pending=TRUE;root_width=0;root_height=0;
     vfbScreenInfoPtr fb=vfbGetScreenPriv(screen);
     if (screen->myNum!=0 || fb->bitsPerPixel!=32 || fb->depth!=24)
@@ -347,13 +361,9 @@ void InitOutput(int argc,char **argv) {
     if (!AddCallback(&PostInitRootWindowCallback,attach_screen,NULL)) FatalError("WayX failed to register screen callback\n");
 }
 void ddxGiveUp(enum ExitCode error) {
+    /* dix_main has already freed every Screen here. Screen-owned cleanup runs
+     * from the close callback while the screen and wrapper chain are valid. */
     remove_signal_wake();
-    if (input_socket>=0) {RemoveNotifyFd(input_socket);input_socket=-1;}
-    if (handlers_registered) {RemoveBlockAndWakeupHandlers(backend_block,backend_wakeup,NULL);handlers_registered=FALSE;}
-    if (rootless && screen) remove_window_hooks();
-    damage=NULL;
-    while (wayx_windows) {WayxWindow *entry=wayx_windows;wayx_windows=entry->next;remove_window(entry);}
-    if (backend) api->window_destroy(backend,1);
     WayxVfbGiveUp(error);
 }
 _X_EXPORT int wayx_xserver_run(const WayxApi *callbacks,WayxBackend *handle,int argc,char **argv) {
