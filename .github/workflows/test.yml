@@ -12,11 +12,11 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
-    - uses: actions/checkout@v4
+    - uses: actions/checkout@v7.0.1
     - uses: dtolnay/rust-toolchain@stable
       with:
         components: rustfmt, clippy
-    - uses: Swatinem/rust-cache@v2
+    - uses: Swatinem/rust-cache@v2.9.3
     - name: Install desktop dependencies
       run: sudo apt-get update && sudo apt-get install -y libx11-dev libxkbcommon-dev libwayland-dev
     - name: Format
@@ -27,9 +27,9 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
-    - uses: actions/checkout@v4
+    - uses: actions/checkout@v7.0.1
     - uses: dtolnay/rust-toolchain@stable
-    - uses: Swatinem/rust-cache@v2
+    - uses: Swatinem/rust-cache@v2.9.3
     - name: Install desktop test dependencies
       run: sudo apt-get update && sudo apt-get install -y libx11-dev libxkbcommon-dev libwayland-dev fonts-dejavu-core
     - name: Rust tests
@@ -40,10 +40,10 @@ jobs:
     runs-on: windows-2022
     timeout-minutes: 30
     steps:
-    - uses: actions/checkout@v4
+    - uses: actions/checkout@v7.0.1
     - uses: dtolnay/rust-toolchain@stable
-    - uses: Swatinem/rust-cache@v2
-    - uses: ilammy/msvc-dev-cmd@v1
+    - uses: Swatinem/rust-cache@v2.9.3
+    - uses: ilammy/msvc-dev-cmd@v1.13.0
     - name: Rust tests
       run: cargo test --locked --lib --bins
     - name: Core without default features
@@ -52,9 +52,9 @@ jobs:
     runs-on: macos-latest
     timeout-minutes: 30
     steps:
-    - uses: actions/checkout@v4
+    - uses: actions/checkout@v7.0.1
     - uses: dtolnay/rust-toolchain@stable
-    - uses: Swatinem/rust-cache@v2
+    - uses: Swatinem/rust-cache@v2.9.3
     - name: Rust tests
       run: cargo test --locked --lib --bins
     - name: Core without default features
