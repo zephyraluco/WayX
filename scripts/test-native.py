@@ -10,13 +10,16 @@ import subprocess
 import sys
 import tempfile
 import time
+from test_fixtures import prebuilt
 
 parser = argparse.ArgumentParser()
 parser.add_argument("--binary", type=Path, default=Path("target/debug/wayx"))
 parser.add_argument("--core", type=Path)
 parser.add_argument("--glx-client", type=Path)
 parser.add_argument("--gpu-cycles", action="store_true")
+parser.add_argument("--test-kit", type=Path)
 args = parser.parse_args()
+if args.test_kit: os.environ["WAYX_TEST_KIT"] = str(args.test_kit.resolve())
 binary = str(args.binary.resolve())
 xvfb = os.environ.get("WAYX_TEST_XVFB") or shutil.which("Xvfb")
 if not xvfb:
@@ -68,10 +71,15 @@ with tempfile.TemporaryDirectory(prefix="wayx-native-") as temp:
                                env=env, check=True, timeout=30)
                 if Path(f"/tmp/.X11-unix/X{core_display}").exists():
                     raise RuntimeError("XLibre socket survived normal shutdown")
-                flags = shlex.split(subprocess.check_output(["pkg-config", "--cflags", "--libs", "x11"], text=True))
-                resize_client = Path(temp) / "resize-client"
-                subprocess.run(["cc", "-std=c11", "-D_POSIX_C_SOURCE=200809L", "-Wall", "-Wextra", "-Werror",
-                                "tests/native-resize.c", *flags, "-o", str(resize_client)], check=True)
+                def fixture(name):
+                    compiled = prebuilt(name)
+                    if compiled is not None: return compiled
+                    flags = shlex.split(subprocess.check_output(["pkg-config", "--cflags", "--libs", "x11"], text=True))
+                    destination = Path(temp)/name
+                    subprocess.run(["cc", "-std=c11", "-D_POSIX_C_SOURCE=200809L", "-Wall", "-Wextra", "-Werror",
+                                    "tests/"+name+".c", *flags, "-o", str(destination)], check=True)
+                    return destination
+                resize_client = fixture("native-resize")
                 desktop = subprocess.Popen([binary, "serve", "--core", str(args.core.resolve()),
                                             "--", f":{core_display}", "-screen", "0", "1280x800x24",
                                             "-crtcs", "1@1280x800", "-nolisten", "tcp", "-auth", str(auth)], env=env)
@@ -88,9 +96,7 @@ with tempfile.TemporaryDirectory(prefix="wayx-native-") as temp:
                         desktop.kill()
                         desktop.wait()
                         raise
-                client = Path(temp) / "rootless-client"
-                subprocess.run(["cc", "-std=c11", "-D_POSIX_C_SOURCE=200809L", "-Wall", "-Wextra", "-Werror",
-                                "tests/native-rootless.c", *flags, "-o", str(client)], check=True)
+                client = fixture("native-rootless")
                 rootless = subprocess.Popen([binary, "serve", "--rootless", "--core", str(args.core.resolve()),
                                              "--", f":{core_display}",
                                              "-nolisten", "tcp", "-auth", str(auth)], env=env)
@@ -99,9 +105,7 @@ with tempfile.TemporaryDirectory(prefix="wayx-native-") as temp:
                     client_env["XAUTHORITY"] = str(auth)
                     subprocess.run([str(client), f":{core_display}", f":{host}"], env=client_env, check=True, timeout=30)
                     if args.glx_client:
-                        observer = Path(temp) / "native-glx"
-                        subprocess.run(["cc", "-std=c11", "-Wall", "-Wextra", "-Werror",
-                                        "tests/native-glx.c", *flags, "-o", str(observer)], check=True)
+                        observer = fixture("native-glx")
                         gl_env = client_env.copy()
                         gl_env.update(DISPLAY=f":{core_display}", LIBGL_ALWAYS_SOFTWARE="1", GALLIUM_DRIVER="llvmpipe")
                         gl_env.pop("LIBGL_ALWAYS_INDIRECT", None)
@@ -127,8 +131,7 @@ with tempfile.TemporaryDirectory(prefix="wayx-native-") as temp:
                         rootless.kill()
                         rootless.wait()
             if args.core:
-                idle_client = Path(temp) / "idle-client"
-                subprocess.run(["cc", "-std=c11", "-Wall", "-Wextra", "-Werror", "tests/idle-client.c", *flags, "-o", str(idle_client)], check=True)
+                idle_client = fixture("idle-client")
                 for rootless_mode in (True, False):
                     idle_log = Path(temp) / f"idle-{rootless_mode}.log"
                     idle_env = env.copy()

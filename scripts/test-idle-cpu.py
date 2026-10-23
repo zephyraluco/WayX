@@ -10,6 +10,7 @@ import subprocess
 import sys
 import tempfile
 import time
+from test_fixtures import prebuilt
 
 
 def cpu_time(process):
@@ -74,6 +75,8 @@ def memory_usage(process):
 
 
 def build_fixture(name):
+    fixture = prebuilt(name)
+    if fixture is not None: return fixture
     command = ["cargo", "test", "--locked", "--test", name, "--no-run", "--message-format=json"]
     if sys.platform == "win32":
         command.append("--release")
@@ -344,7 +347,9 @@ parser.add_argument("--core", type=Path, required=True)
 parser.add_argument("--display", type=int, default=199)
 parser.add_argument("--geometry", action="store_true")
 parser.add_argument("--gpu-cycles", action="store_true")
+parser.add_argument("--test-kit", type=Path)
 args = parser.parse_args()
+if args.test_kit: os.environ["WAYX_TEST_KIT"] = str(args.test_kit.resolve())
 fixture = build_fixture("native_geometry") if args.geometry else None
 gpu_fixture = build_fixture("native_gpu") if args.gpu_cycles else None
 with tempfile.TemporaryDirectory(prefix="wayx-idle-cpu-") as directory:

@@ -1,0 +1,146 @@
+name: Test complete package
+'on':
+  workflow_call:
+    inputs:
+      source-sha:
+        type: string
+        default: ''
+      source-run-id:
+        type: string
+        default: ''
+      runtime-artifact:
+        type: string
+        default: ''
+      test-artifact:
+        type: string
+        default: ''
+      platform:
+        type: string
+        required: true
+  workflow_dispatch:
+    inputs:
+      platform:
+        type: choice
+        options:
+        - linux
+        - windows
+        - macos
+        required: true
+      source-run-id:
+        description: Run ID of the package build
+        required: true
+        type: string
+      source-sha:
+        description: Optional commit SHA (otherwise infer from platform artifact)
+        type: string
+        required: false
+permissions:
+  contents: read
+  actions: read
+jobs:
+  test:
+    name: Test ${{ inputs.platform }} package
+    runs-on: ${{ inputs.platform == 'windows' && 'windows-2022' || inputs.platform == 'macos' && 'macos-latest' || 'ubuntu-latest' }}
+    container: ${{ inputs.platform == 'linux' && 'debian:trixie' || '' }}
+    timeout-minutes: 30
+    defaults:
+      run:
+        shell: bash
+    steps:
+    - name: Install Linux test runtime
+      if: inputs.platform == 'linux'
+      run: |
+        apt-get update
+        apt-get install -y ca-certificates python3 python-is-python3 xvfb xauth libvulkan1 mesa-vulkan-drivers \
+          libgl1-mesa-dri libglx-mesa0
+    - uses: actions/setup-python@v5
+      if: inputs.platform != 'linux'
+      with:
+        python-version: '3.12'
+    - name: Install macOS external Xlib test-client runtime
+      if: inputs.platform == 'macos'
+      run: brew install libx11
+    - name: Resolve matching build artifacts
+      id: artifacts
+      uses: actions/github-script@v7
+      env:
+        PLATFORM: ${{ inputs.platform }}
+        SOURCE_SHA: ${{ inputs.source-sha }}
+        SOURCE_RUN_ID: ${{ inputs.source-run-id }}
+        RUNTIME_ARTIFACT: ${{ inputs.runtime-artifact }}
+        TEST_ARTIFACT: ${{ inputs.test-artifact }}
+      with:
+        script: |
+          const runId = Number(process.env.SOURCE_RUN_ID || context.runId);
+          if (!Number.isSafeInteger(runId) || runId <= 0) throw new Error('Invalid build run ID');
+          const platform = process.env.PLATFORM;
+          if (!['linux', 'windows', 'macos'].includes(platform)) throw new Error('Invalid platform');
+          const artifacts = await github.paginate(github.rest.actions.listWorkflowRunArtifacts,
+            {...context.repo, run_id: runId, per_page: 100});
+          const regex = new RegExp(`^${platform}-core-runtime-(x64|arm64)-([0-9a-f]{40})$`);
+          const candidates = artifacts.filter(a => !a.expired && regex.test(a.name))
+            .filter(a => !process.env.SOURCE_SHA || a.name.endsWith('-'+process.env.SOURCE_SHA))
+            .filter(a => !process.env.RUNTIME_ARTIFACT || a.name === process.env.RUNTIME_ARTIFACT);
+          if (candidates.length !== 1) throw new Error('Select exactly one platform runtime from the build run');
+          const runtime = candidates[0];
+          const match = regex.exec(runtime.name);
+          const kitName = `${platform}-core-test-kit-${match[1]}-${match[2]}`;
+          if (process.env.TEST_ARTIFACT && process.env.TEST_ARTIFACT !== kitName) throw new Error('Test kit identity differs');
+          if (!artifacts.some(a => !a.expired && a.name === kitName)) throw new Error('Matching precompiled test kit missing');
+          core.setOutput('runtime', runtime.name);
+          core.setOutput('kit', kitName);
+          core.setOutput('sha', match[2]);
+          core.setOutput('run-id', String(runId));
+    - uses: actions/download-artifact@v4
+      with:
+        name: ${{ steps.artifacts.outputs.runtime }}
+        path: downloads/runtime
+        github-token: ${{ github.token }}
+        run-id: ${{ steps.artifacts.outputs.run-id }}
+    - uses: actions/download-artifact@v4
+      with:
+        name: ${{ steps.artifacts.outputs.kit }}
+        path: downloads/test-kit
+        github-token: ${{ github.token }}
+        run-id: ${{ steps.artifacts.outputs.run-id }}
+    - name: Verify archives and relocate into a path with spaces
+      run: |
+        python - <<'PYCODE'
+        import hashlib
+        from pathlib import Path
+        import tarfile
+        import zipfile
+        root = Path('downloads').resolve()
+        checksums = list(root.rglob('*.sha256'))
+        if len(checksums) != 2: raise RuntimeError('Expected runtime and test-kit checksums')
+        destination = Path('relocated runtime').resolve()
+        destination.mkdir()
+        for checksum in checksums:
+            expected, name = checksum.read_text().strip().split(None, 1)
+            archive = checksum.parent / name.strip()
+            if archive.parent.resolve() != checksum.parent.resolve(): raise RuntimeError('Invalid archive name')
+            with archive.open('rb') as stream:
+                if hashlib.file_digest(stream, 'sha256').hexdigest() != expected: raise RuntimeError('Archive checksum mismatch')
+            if archive.suffix == '.zip':
+                with zipfile.ZipFile(archive) as bundle:
+                    if any(not (destination/name).resolve().is_relative_to(destination) for name in bundle.namelist()):
+                        raise RuntimeError('Invalid archive path')
+                    bundle.extractall(destination)
+            else:
+                with tarfile.open(archive) as bundle: bundle.extractall(destination, filter='data')
+        PYCODE
+    - name: Test complete package without source or compilers
+      env:
+        EXPECTED_SHA: ${{ steps.artifacts.outputs.sha }}
+      run: |
+        python 'relocated runtime/test-kit/scripts/test-package.py' \
+          --runtime 'relocated runtime/runtime' --test-kit 'relocated runtime/test-kit' \
+          --expected-sha "$EXPECTED_SHA" --logs test-output
+    - name: Upload package test diagnostics
+      if: always()
+      uses: actions/upload-artifact@v4
+      with:
+        name: ${{ inputs.platform }}-package-test-results-${{ github.run_id }}-${{ github.run_attempt }}
+        path: test-output
+        if-no-files-found: warn
+        retention-days: 7

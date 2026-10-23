@@ -1,96 +1,51 @@
-name: WayX
-on: [push, pull_request]
+name: WayX packages
+'on':
+  push: null
+  pull_request: null
+  workflow_dispatch: null
 permissions:
   contents: read
+  actions: read
 jobs:
-  rust:
-    strategy:
-      fail-fast: false
-      matrix:
-        os: [ubuntu-latest, windows-latest, macos-latest]
-    runs-on: ${{ matrix.os }}
-    steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
-        with:
-          components: rustfmt, clippy
-      - uses: Swatinem/rust-cache@v2
-      - if: runner.os == 'Linux'
-        run: sudo apt-get update && sudo apt-get install -y libx11-dev libxkbcommon-dev libwayland-dev
-      - run: cargo fmt --check
-      - run: cargo clippy --locked --all-targets --all-features -- -D warnings
-      - run: cargo test --locked --all-targets
-      - run: cargo test --locked --no-default-features --lib
-      - name: Build final client
-        run: cargo build --locked --release
-      - uses: actions/upload-artifact@v4
-        with:
-          name: wayx-${{ runner.os }}-${{ runner.arch }}-${{ github.sha }}
-          path: |
-            target/release/wayx
-            target/release/wayx.exe
-            LICENSE
-          if-no-files-found: error
-          retention-days: 7
-  xlibre:
-    runs-on: ubuntu-latest
-    container: debian:trixie
-    steps:
-      - name: Install XLibre build and native X11 runtime dependencies
-        run: |
-          apt-get update
-          apt-get install -y git ca-certificates curl build-essential pkg-config \
-            python3 meson ninja-build libx11-dev libxkbcommon-dev libwayland-dev \
-            libpixman-1-dev libxkbfile-dev libxfont-dev libmd-dev xtrans-dev \
-            x11proto-dev xkb-data x11-xkb-utils libvulkan1 mesa-vulkan-drivers xvfb \
-            libxcursor1 libx11-xcb1 libxi6 libxkbcommon-x11-0 libgl-dev libglx-dev \
-            libgl1-mesa-dri libglx-mesa0 mesa-utils libogre-1.12-dev
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
-      - run: bash scripts/build-xlibre.sh
-      - name: Check Windows Screen field compatibility
-        run: python3 scripts/test-ddx-window-hooks.py
-      - run: cargo build --locked --release && bash scripts/test-c-bridge.sh
-      - run: WAYX_TEST_CORE=$PWD/build/xlibre/hw/wayx/libwayx-xserver.so cargo test --locked --test xlibre -- --ignored --nocapture
-      - run: WAYX_TEST_MONITORS=1 WAYX_TEST_CORE=$PWD/build/xlibre/hw/wayx/libwayx-xserver.so cargo test --locked --test xlibre -- --ignored --nocapture
-      - run: WAYX_TEST_CORE=$PWD/build/xlibre/hw/wayx/libwayx-xserver.so cargo test --locked --test rootless -- --ignored --nocapture
-      - run: WAYX_TEST_CORE=$PWD/build/xlibre/hw/wayx/libwayx-xserver.so cargo test --locked --test window_manager -- --ignored --nocapture
-      - name: Verify real Xlib XIM Unicode, preedit and focus routing
-        run: |
-          cc -std=c11 -Wall -Wextra -Werror tests/xim-client.c -lX11 -o /tmp/wayx-xim-client
-          WAYX_TEST_CORE=$PWD/build/xlibre/hw/wayx/libwayx-xserver.so WAYX_TEST_XIM_CLIENT=/tmp/wayx-xim-client cargo test --locked --test ime -- --ignored --nocapture
-      - name: Verify TCP software OpenGL and OGRE pixels
-        env:
-          LIBGL_ALWAYS_SOFTWARE: "1"
-          GALLIUM_DRIVER: llvmpipe
-        run: |
-          cc -std=c11 -Wall -Wextra -Werror tests/glx-client.c $(pkg-config --cflags --libs gl x11) -o /tmp/wayx-glx-client
-          c++ -std=c++17 -Wall -Wextra -Werror -isystem "$(pkg-config --variable=includedir OGRE)/OGRE" tests/ogre-client.cpp $(pkg-config --libs OGRE) -o /tmp/wayx-ogre-client
-          export WAYX_TEST_CORE=$PWD/build/xlibre/hw/wayx/libwayx-xserver.so
-          export WAYX_TEST_OGRE_PLUGIN="$(pkg-config --variable=plugindir OGRE)/RenderSystem_GL.so"
-          for client in /tmp/wayx-glx-client /tmp/wayx-ogre-client; do
-            WAYX_TEST_GLX_CLIENT=$client cargo test --locked --test glx -- --ignored --nocapture
-            WAYX_TEST_ROOTLESS=1 WAYX_TEST_GLX_CLIENT=$client cargo test --locked --test glx -- --ignored --nocapture
-          done
-      - run: mkdir -p /tmp/wayx-runtime && chmod 700 /tmp/wayx-runtime && XDG_RUNTIME_DIR=/tmp/wayx-runtime WGPU_BACKEND=vulkan cargo run --locked -- gpu-smoke
-      - name: Check winit X11 runtime libraries
-        run: |
-          python3 - <<'PY'
-          import ctypes
-          for library in ("libX11.so.6", "libXcursor.so.1", "libX11-xcb.so.1",
-                          "libXi.so.6", "libxkbcommon.so.0", "libxkbcommon-x11.so.0"):
-              ctypes.CDLL(library)
-              print(f"Loaded {library}")
-          PY
-      - name: Native X11 rendering and XLibre lifecycle
-        env:
-          WGPU_BACKEND: vulkan
-        run: python3 scripts/test-native.py --binary target/release/wayx --core build/xlibre/hw/wayx/libwayx-xserver.so --glx-client /tmp/wayx-glx-client --gpu-cycles
-      - uses: actions/upload-artifact@v4
-        with:
-          name: xlibre-Linux-${{ runner.arch }}-${{ github.sha }}
-          path: |
-            build/xlibre/hw/wayx/libwayx-xserver.so
-            LICENSE
-          if-no-files-found: error
-          retention-days: 7
+  build-linux:
+    name: Build linux
+    uses: ./.github/workflows/build-packages.yml
+    with:
+      platform: linux
+  test-linux:
+    name: Test linux
+    needs: build-linux
+    uses: ./.github/workflows/test-packages.yml
+    with:
+      platform: linux
+      source-sha: ${{ github.sha }}
+      runtime-artifact: ${{ needs.build-linux.outputs.runtime-artifact }}
+      test-artifact: ${{ needs.build-linux.outputs.test-artifact }}
+  build-windows:
+    name: Build windows
+    uses: ./.github/workflows/build-packages.yml
+    with:
+      platform: windows
+  test-windows:
+    name: Test windows
+    needs: build-windows
+    uses: ./.github/workflows/test-packages.yml
+    with:
+      platform: windows
+      source-sha: ${{ github.sha }}
+      runtime-artifact: ${{ needs.build-windows.outputs.runtime-artifact }}
+      test-artifact: ${{ needs.build-windows.outputs.test-artifact }}
+  build-macos:
+    name: Build macos
+    uses: ./.github/workflows/build-packages.yml
+    with:
+      platform: macos
+  test-macos:
+    name: Test macos
+    needs: build-macos
+    uses: ./.github/workflows/test-packages.yml
+    with:
+      platform: macos
+      source-sha: ${{ github.sha }}
+      runtime-artifact: ${{ needs.build-macos.outputs.runtime-artifact }}
+      test-artifact: ${{ needs.build-macos.outputs.test-artifact }}

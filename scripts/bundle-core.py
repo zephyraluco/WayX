@@ -8,6 +8,7 @@ import re
 import shutil
 import subprocess
 import sys
+from package_support import stamp, archive, elf_dependencies
 
 parser = argparse.ArgumentParser(description=__doc__)
 parser.add_argument("--core", type=Path, required=True)
@@ -17,9 +18,10 @@ parser.add_argument("--xkb-dir", type=Path, required=True)
 parser.add_argument("--output", type=Path, required=True)
 parser.add_argument("--search-dir", type=Path, action="append", default=[])
 parser.add_argument("--license-dir", type=Path, action="append", default=[])
+parser.add_argument("--archive-dir", type=Path)
 args = parser.parse_args()
-if sys.platform not in ("darwin", "win32"):
-    parser.error("native macOS or Windows is required")
+if sys.platform not in ("darwin", "win32", "linux"):
+    parser.error("native Linux, macOS or Windows is required")
 for directory in args.license_dir:
     if not directory.is_dir():
         parser.error(f"missing license source: {directory}")
@@ -86,6 +88,17 @@ def resolve_macho(name, source):
 core = register(args.core, libdir / args.core.name)
 client = register(args.client, bindir / args.client.name)
 compiler = register(args.compiler, bindir / args.compiler.name)
+if sys.platform == "linux":
+    # winit loads these at runtime, so ldd cannot discover them from the client.
+    table = output("ldconfig", "-p")
+    for name in ("libX11.so.6", "libXcursor.so.1", "libX11-xcb.so.1", "libXi.so.6",
+                 "libxkbcommon.so.0", "libxkbcommon-x11.so.0", "libwayland-client.so.0",
+                 "libwayland-cursor.so.0", "libwayland-egl.so.1"):
+        candidates = [directory/name for directory in search]
+        candidates += [Path(value) for value in re.findall(r"^\s*"+re.escape(name)+r" .*?=> (.+)$", table, re.M)]
+        source = next((p for p in candidates if p.is_file()), None)
+        if source is None: raise RuntimeError(f"missing dynamically loaded library: {name}")
+        register(source, libdir/name)
 while queue:
     source, destination = queue.pop(0)
     if sys.platform == "darwin":
@@ -105,6 +118,10 @@ while queue:
         if destination.suffix == ".dylib":
             subprocess.run(["install_name_tool", "-id", "@rpath/" + destination.name,
                             str(destination)], check=True)
+    elif sys.platform == "linux":
+        for dependency, is_system in elf_dependencies(source):
+            if is_system: system.add(dependency.name)
+            else: register(dependency, libdir/dependency.name)
     else:
         names = re.findall(r"DLL Name:\s*(\S+)", output("objdump", "-p", str(source)))
         for name in names:
@@ -119,15 +136,21 @@ while queue:
             register(dependency, bindir / name)
 
 shutil.copytree(args.xkb_dir, out / "share" / "X11" / "xkb", symlinks=False)
+if sys.platform == "linux":
+    for _, path in objects.values():
+        relative = "$ORIGIN/../lib" if path.parent == bindir else "$ORIGIN"
+        subprocess.run(["patchelf", "--set-rpath", relative, str(path)], check=True)
 if sys.platform == "darwin":
     # install_name_tool changes invalidate Mach-O signatures on Apple silicon.
     for _, path in objects.values():
         subprocess.run(["codesign", "--force", "--sign", "-", "--timestamp=none", str(path)], check=True)
+if sys.platform in ("darwin", "linux"):
     launcher = out / "wayx.sh"
     launcher.write_text(f'''#!/bin/sh
 set -eu
 runtime=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 export WAYX_XKB_DIR="$runtime/share/X11/xkb"
+{('export LD_LIBRARY_PATH="$runtime/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"' + chr(10)) if sys.platform == "linux" else ''}
 export WAYX_XKB_BIN_DIR="$runtime/bin"
 exec "$runtime/bin/{client.name}" serve --core "$runtime/lib/{core.name}" "$@"
 ''')
@@ -154,11 +177,13 @@ for index, root in enumerate(sorted(license_roots)):
             destination = licenses / f"{index}-{root.name}" / path.relative_to(root)
             destination.parent.mkdir(parents=True, exist_ok=True)
             shutil.copy2(path, destination)
-manifest = {"abi": 2, "platform": sys.platform,
-            "core_revision": "a8192aa70998a803155bdc2e73b7564a1415f33a",
-            "core": str(core.relative_to(out)),
-            "libraries": sorted(str(path.relative_to(out)) for _, path in objects.values()),
-            "system_dependencies": sorted(system),
-            "signing": "ad-hoc" if sys.platform == "darwin" else "unsigned"}
-(out / "manifest.json").write_text(json.dumps(manifest, indent=2) + "\n")
+manifest = stamp(out, "runtime", core_revision="a8192aa70998a803155bdc2e73b7564a1415f33a",
+                 core=core.relative_to(out).as_posix(), client=client.relative_to(out).as_posix(),
+                 launcher="wayx.cmd" if sys.platform == "win32" else "wayx.sh",
+                 libraries=sorted(path.relative_to(out).as_posix() for _, path in objects.values()),
+                 system_dependencies=sorted(system),
+                 compatibility="Debian 13 / glibc 2.41 or newer" if sys.platform == "linux" else "native runner target",
+                 driver_dependencies=["host GPU driver and display server"],
+                 signing="ad-hoc" if sys.platform == "darwin" else "unsigned")
+if args.archive_dir: archive(out, args.archive_dir, "core-runtime")
 print(f"Staged {len(objects)} native binaries in {out}")
