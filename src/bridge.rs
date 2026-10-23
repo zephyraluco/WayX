@@ -49,7 +49,6 @@ pub unsafe extern "C" fn wayx_window_create(
     unsafe {
         access(handle, |b| {
             b.create(id, parent, width, height).map_err(|_| ())?;
-            b.output_pending = true;
             Ok(())
         })
     }
@@ -61,7 +60,6 @@ pub unsafe extern "C" fn wayx_window_destroy(handle: *mut Handle, id: u32) -> i3
     unsafe {
         access(handle, |b| {
             b.destroy(id).map_err(|_| ())?;
-            b.output_pending = true;
             Ok(())
         })
     }
@@ -78,7 +76,6 @@ pub unsafe extern "C" fn wayx_window_resize(
     unsafe {
         access(handle, |b| {
             b.resize(id, width, height).map_err(|_| ())?;
-            b.output_pending = true;
             Ok(())
         })
     }
@@ -98,7 +95,7 @@ pub unsafe extern "C" fn wayx_window_title(
             let window = b.windows.get_mut(&id).ok_or(())?;
             if window.title != text {
                 window.title = text.to_owned();
-                b.output_pending = true;
+                b.changed(id);
             }
             Ok(())
         })
@@ -159,7 +156,7 @@ pub unsafe extern "C" fn wayx_frame_damage(
                 )
                 .map_err(|_| ())?;
             if width != 0 && height != 0 {
-                b.output_pending = true;
+                b.changed(id);
             }
             Ok(())
         })
@@ -466,6 +463,41 @@ mod batch_tests {
     use super::*;
     use std::sync::atomic::{AtomicUsize, Ordering};
     #[test]
+    fn metadata_and_lifecycle_publish_only_at_batch_commit() {
+        let mut handle = Handle(Arc::new(Mutex::new(Backend::default())));
+        unsafe {
+            assert_eq!(wayx_window_create(&mut handle, 7, 0, 2, 2), 0);
+            assert_eq!(wayx_window_map(&mut handle, 7, 1), 0);
+            assert!(handle.0.lock().unwrap().published_windows.is_empty());
+            assert_eq!(output_flush(&mut handle), 0);
+            let first = handle.0.lock().unwrap().published_windows[&7].clone();
+            assert!(first.mapped);
+            assert_eq!(wayx_window_title(&mut handle, 7, b"new".as_ptr(), 3), 0);
+            assert_eq!(wayx_window_resize(&mut handle, 7, 3, 3), 0);
+            let old = handle.0.lock().unwrap().published_windows[&7].clone();
+            assert!(Arc::ptr_eq(&first, &old));
+            assert_eq!(old.pixel_size, (2, 2));
+            assert_eq!(output_flush(&mut handle), 0);
+            let new = handle.0.lock().unwrap().published_windows[&7].clone();
+            assert_eq!(new.title.as_ref(), "new");
+            assert_eq!(new.pixel_size, (3, 3));
+            assert_ne!(new.pixel_revision, old.pixel_revision);
+            assert_eq!(wayx_window_destroy(&mut handle, 7), 0);
+            assert!(handle.0.lock().unwrap().published_windows.contains_key(&7));
+            // XID reuse in one batch must replace, not reuse, the native window.
+            assert_eq!(wayx_window_create(&mut handle, 7, 0, 2, 2), 0);
+            assert_eq!(wayx_window_map(&mut handle, 7, 1), 0);
+            assert_eq!(output_flush(&mut handle), 0);
+            assert_ne!(
+                handle.0.lock().unwrap().published_windows[&7].incarnation,
+                first.incarnation
+            );
+            assert_eq!(wayx_window_destroy(&mut handle, 7), 0);
+            assert_eq!(output_flush(&mut handle), 0);
+            assert!(handle.0.lock().unwrap().published_windows.is_empty());
+        }
+    }
+    #[test]
     fn output_batch_notifies_once_and_ignores_unchanged_metadata() {
         let count = Arc::new(AtomicUsize::new(0));
         let observer = count.clone();
@@ -502,12 +534,13 @@ mod geometry_batch_tests {
     fn handle() -> Handle {
         let mut backend = Backend::default();
         backend.create(1, 0, 400, 287).unwrap();
+        backend.flush_output();
         Handle(Arc::new(Mutex::new(backend)))
     }
     fn published(handle: &Handle) -> (GeometrySnapshot, u64) {
         let backend = handle.0.lock().unwrap();
-        let window = &backend.windows[&1];
-        (window.geometry, window.geometry_generation)
+        let window = &backend.published_windows[&1];
+        (window.geometry, window.generation)
     }
     fn snapshot(sequence: u32, x: i32) -> GeometrySnapshot {
         GeometrySnapshot {

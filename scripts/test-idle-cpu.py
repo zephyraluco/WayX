@@ -203,12 +203,14 @@ def geometry_client(binary, process, display, auth, log):
         expect("GEOMETRY DONE")
     def corrections():
         contents=log.read_text()
-        return (contents.count("applying server position"),contents.count("WayX host desktop layout applied:"))
+        return (contents.count("applying server position"),contents.count("WayX host desktop layout applied:"),contents.count("applying native size hints"))
     def verify_drag(before, steps=300):
         after=corrections()
         count = after[0] - before[0]
         if after[1] != before[1]:
             raise RuntimeError("Dragging changed the host desktop layout")
+        if after[2] != before[2]:
+            raise RuntimeError("Dragging reapplied native size hints")
         if count:
             raise RuntimeError(f"Accepted local drag caused {count} native position corrections")
         print(f"{steps}-step drag: zero native position corrections.", flush=True)

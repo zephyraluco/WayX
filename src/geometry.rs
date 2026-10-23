@@ -7,6 +7,7 @@ pub(crate) struct ResizeSync {
     pending: Option<(u32, Size)>,
     sequence: u32,
     outgoing: Option<(u32, Size)>,
+    issued: Option<Size>,
 }
 impl ResizeSync {
     pub fn new(server: Size, initial_target: Size, acknowledgement: u32) -> Self {
@@ -17,6 +18,7 @@ impl ResizeSync {
             pending: None,
             sequence: acknowledgement,
             outgoing: None,
+            issued: None,
         }
     }
     pub fn server_update(&mut self, size: Size, acknowledgement: u32) {
@@ -38,6 +40,7 @@ impl ResizeSync {
         }
         if self.native_target == Some(size) {
             self.native_target = None;
+            self.issued = None;
             self.initializing = false;
             // Initial native constraints can legitimately clamp the server size.
             if size == self.server {
@@ -46,6 +49,7 @@ impl ResizeSync {
         } else if self.initializing {
             return;
         }
+        self.issued = None;
         if self.pending.is_some_and(|(_, pending)| pending == size)
             || (self.pending.is_none() && size == self.server)
         {
@@ -59,6 +63,15 @@ impl ResizeSync {
     pub fn target(&self) -> Option<Size> {
         self.native_target
     }
+    /// Issue a target once while waiting for the native resize event.
+    pub fn issue_target(&mut self) -> Option<Size> {
+        let target = self.native_target?;
+        if self.issued == Some(target) {
+            return None;
+        }
+        self.issued = Some(target);
+        Some(target)
+    }
     pub fn take_input(&mut self) -> Option<(u32, Size)> {
         self.outgoing.take()
     }
@@ -71,6 +84,19 @@ mod tests {
         let mut sync = ResizeSync::new((400, 287), (400, 287), 0);
         sync.native_resize((400, 287));
         sync
+    }
+    #[test]
+    fn native_size_request_is_issued_once_per_target() {
+        let mut sync = ready();
+        sync.server_update((800, 600), 0);
+        assert_eq!(sync.issue_target(), Some((800, 600)));
+        assert_eq!(sync.issue_target(), None);
+        sync.native_resize((800, 600));
+        assert_eq!(sync.issue_target(), None);
+        sync.native_resize((900, 650));
+        let (sequence, _) = sync.take_input().unwrap();
+        sync.server_update((800, 600), sequence);
+        assert_eq!(sync.issue_target(), Some((800, 600)));
     }
     #[test]
     fn startup_transients_do_not_resize_x11() {

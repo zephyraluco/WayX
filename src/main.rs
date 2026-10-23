@@ -108,6 +108,7 @@ fn main() -> Result<()> {
                 800 * 4,
                 &pixels,
             )?;
+            b.flush_output();
             wayx::desktop::run(
                 std::sync::Arc::new(std::sync::Mutex::new(b)),
                 true,

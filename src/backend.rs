@@ -1,4 +1,7 @@
-use std::collections::{BTreeMap, VecDeque};
+use std::{
+    collections::{BTreeMap, BTreeSet, VecDeque},
+    sync::Arc,
+};
 
 pub const MAX_DIMENSION: u32 = 16384;
 pub const MAX_FRAME_BYTES: usize = 256 * 1024 * 1024;
@@ -90,7 +93,7 @@ impl Framebuffer {
                 pixel[3] = 255;
             }
         }
-        self.revision = self.revision.wrapping_add(1);
+        self.revision = self.revision.wrapping_add(1).max(1);
         self.damage = Some(match self.damage {
             None => rect,
             Some(old) => {
@@ -123,15 +126,27 @@ fn frame_len(width: u32, height: u32) -> Result<usize, Error> {
 
 #[derive(Debug)]
 pub struct Window {
+    pub incarnation: u64,
     pub id: u32,
     pub parent: u32,
     pub title: String,
-    pub x: i32,
-    pub y: i32,
     pub mapped: bool,
     pub geometry: crate::window::GeometrySnapshot,
     pub geometry_generation: u64,
     pub framebuffer: Framebuffer,
+}
+
+/// Immutable metadata published only by output_flush. Pixel storage has its own
+/// version and may advance while the UI still displays the previous geometry.
+#[derive(Clone, Debug)]
+pub struct WindowSnapshot {
+    pub incarnation: u64,
+    pub mapped: bool,
+    pub title: Arc<str>,
+    pub geometry: crate::window::GeometrySnapshot,
+    pub generation: u64,
+    pub pixel_size: (u32, u32),
+    pub pixel_revision: u64,
 }
 
 /// Stable wire events. Keys carry physical USB HID usage codes; DDX maps to X keycodes.
@@ -165,14 +180,17 @@ pub mod event {
 
 #[derive(Default)]
 pub struct Backend {
+    /// DDX working state; UI lifecycle decisions use published_windows instead.
     pub windows: BTreeMap<u32, Window>,
+    pub published_windows: BTreeMap<u32, Arc<WindowSnapshot>>,
+    dirty_windows: BTreeSet<u32>,
+    next_incarnation: u64,
     pub focus: Option<u32>,
     pub requested_focus: Option<u32>,
     pub clipboard: String,
     pub clipboard_revision: u64,
     events: VecDeque<InputEvent>,
     pub(crate) ui_wake: Option<crate::notify::UiWake>,
-    pub(crate) output_pending: bool,
     pub(crate) pending_geometry: BTreeMap<u32, crate::window::GeometrySnapshot>,
     pub(crate) pending_maps: BTreeMap<u32, bool>,
     pub desktop_layout: Option<crate::layout::DesktopLayout>,
@@ -180,6 +198,9 @@ pub struct Backend {
     pub(crate) input_wake: Option<crate::notify::InputWake>,
 }
 impl Backend {
+    pub(crate) fn changed(&mut self, id: u32) {
+        self.dirty_windows.insert(id);
+    }
     pub fn notify_ui(&self) {
         if let Some(wake) = &self.ui_wake {
             wake();
@@ -192,7 +213,7 @@ impl Backend {
             {
                 window.geometry = geometry;
                 window.geometry_generation = window.geometry_generation.wrapping_add(1).max(1);
-                self.output_pending = true;
+                self.dirty_windows.insert(id);
             }
         }
         // A newly mapped window must not become visible before its first
@@ -202,10 +223,34 @@ impl Backend {
                 && window.mapped != mapped
             {
                 window.mapped = mapped;
-                self.output_pending = true;
+                self.dirty_windows.insert(id);
             }
         }
-        if std::mem::take(&mut self.output_pending) {
+        let changed = !self.dirty_windows.is_empty();
+        for id in std::mem::take(&mut self.dirty_windows) {
+            if let Some(window) = self.windows.get(&id) {
+                let title = self
+                    .published_windows
+                    .get(&id)
+                    .filter(|old| old.title.as_ref() == window.title)
+                    .map_or_else(|| Arc::from(window.title.as_str()), |old| old.title.clone());
+                self.published_windows.insert(
+                    id,
+                    Arc::new(WindowSnapshot {
+                        incarnation: window.incarnation,
+                        mapped: window.mapped,
+                        title,
+                        geometry: window.geometry,
+                        generation: window.geometry_generation,
+                        pixel_size: (window.framebuffer.width, window.framebuffer.height),
+                        pixel_revision: window.framebuffer.revision,
+                    }),
+                );
+            } else {
+                self.published_windows.remove(&id);
+            }
+        }
+        if changed {
             self.notify_ui();
         }
     }
@@ -231,14 +276,14 @@ impl Backend {
         {
             return Err(Error::InvalidSize);
         }
+        self.next_incarnation = self.next_incarnation.wrapping_add(1).max(1);
         self.windows.insert(
             id,
             Window {
+                incarnation: self.next_incarnation,
                 id,
                 parent,
                 title: format!("WayX — {id:#x}"),
-                x: 0,
-                y: 0,
                 mapped: false,
                 geometry: crate::window::GeometrySnapshot {
                     width,
@@ -249,6 +294,7 @@ impl Backend {
                 framebuffer: Framebuffer::new(width, height)?,
             },
         );
+        self.changed(id);
         Ok(())
     }
     pub fn resize(&mut self, id: u32, width: u32, height: u32) -> Result<(), Error> {
@@ -271,7 +317,11 @@ impl Backend {
         {
             return Err(Error::InvalidSize);
         }
-        self.windows.get_mut(&id).unwrap().framebuffer = Framebuffer::new(width, height)?;
+        let window = self.windows.get_mut(&id).unwrap();
+        let revision = window.framebuffer.revision.wrapping_add(1).max(1);
+        window.framebuffer = Framebuffer::new(width, height)?;
+        window.framebuffer.revision = revision;
+        self.changed(id);
         Ok(())
     }
     pub fn destroy(&mut self, id: u32) -> Result<(), Error> {
@@ -288,6 +338,7 @@ impl Backend {
             self.destroy(child)?;
         }
         self.windows.remove(&id);
+        self.changed(id);
         self.pending_geometry.remove(&id);
         self.pending_maps.remove(&id);
         if self.focus == Some(id) {
@@ -398,6 +449,15 @@ mod tests {
             b.create(MAX_WINDOWS as u32 + 1, 0, 1, 1),
             Err(Error::InvalidSize)
         );
+    }
+    #[test]
+    fn resize_back_to_original_size_has_a_new_pixel_version() {
+        let mut backend = Backend::default();
+        backend.create(1, 0, 2, 2).unwrap();
+        let original = backend.windows[&1].framebuffer.revision;
+        backend.resize(1, 3, 3).unwrap();
+        backend.resize(1, 2, 2).unwrap();
+        assert_ne!(backend.windows[&1].framebuffer.revision, original);
     }
     #[test]
     fn padded_damage_and_opaque_xrgb() {

@@ -341,6 +341,7 @@ impl Image {
 }
 struct Native {
     id: u32,
+    incarnation: u64,
     // Fields drop in declaration order. A surface must outlive its images,
     // and the native window must outlive its surface.
     image: Image,
@@ -352,7 +353,6 @@ struct Native {
     applied_state: Option<WindowState>,
     remote_size: (u32, u32),
     resize_sync: crate::geometry::ResizeSync,
-    issued_size: Option<(u32, u32)>,
     position_sync: crate::geometry::PositionSync,
     geometry_generation: Option<u64>,
     title: String,
@@ -477,6 +477,7 @@ impl Native {
         let image = Image::new(&gpu, width, height, config.format)?;
         Ok(Self {
             id,
+            incarnation: 0,
             window,
             surface,
             gpu,
@@ -486,7 +487,6 @@ impl Native {
             applied_state: None,
             remote_size: (width, height),
             resize_sync,
-            issued_size: None,
             position_sync: crate::geometry::PositionSync::new(
                 (state.x, state.y),
                 acknowledgements.1,
@@ -550,6 +550,7 @@ impl Native {
             old != current
         });
         if hints_changed {
+            tracing::debug!(window = self.id, "applying native size hints");
             self.window.set_resizable(
                 !(state.min_width != 0
                     && state.max_width == state.min_width
@@ -653,16 +654,12 @@ impl Native {
             let size = winit::dpi::PhysicalSize::new(width, height);
             if self.window.inner_size() == size {
                 self.resize_sync.native_resize((width, height));
-                self.issued_size = None;
-            } else if self.issued_size != Some((width, height)) {
-                self.issued_size = Some((width, height));
-                if let Some(actual) = self.window.request_inner_size(size) {
-                    let constrained = state.constrain(actual.width, actual.height);
-                    self.resize_sync.native_resize(constrained);
-                }
+            } else if self.resize_sync.issue_target().is_some()
+                && let Some(actual) = self.window.request_inner_size(size)
+            {
+                let constrained = state.constrain(actual.width, actual.height);
+                self.resize_sync.native_resize(constrained);
             }
-        } else {
-            self.issued_size = None;
         }
     }
     fn x11_id(&self) -> Result<Option<u32>> {
@@ -772,28 +769,6 @@ fn resize_input(id: u32, state: &WindowState, width: u32, height: u32, flags: u3
         ..Default::default()
     }
 }
-/// Cheap immutable UI observation; pixel storage stays in Backend.
-struct WindowUpdate {
-    mapped: bool,
-    title: String,
-    geometry: crate::window::GeometrySnapshot,
-    generation: u64,
-    pixel_size: (u32, u32),
-    pixel_revision: u64,
-}
-impl From<&crate::backend::Window> for WindowUpdate {
-    fn from(window: &crate::backend::Window) -> Self {
-        Self {
-            mapped: window.mapped,
-            title: window.title.clone(),
-            geometry: window.geometry,
-            generation: window.geometry_generation,
-            pixel_size: (window.framebuffer.width, window.framebuffer.height),
-            pixel_revision: window.framebuffer.revision,
-        }
-    }
-}
-
 struct App {
     backend: SharedBackend,
     pending_move: Option<InputEvent>,
@@ -888,7 +863,19 @@ impl App {
         }
     }
     fn enqueue_input(&mut self, input: InputEvent) {
-        let result = self.backend.lock().unwrap().push_input(input);
+        let result = {
+            let mut backend = self.backend.lock().unwrap();
+            if input.window != 0
+                && backend.windows.get(&input.window).is_none_or(|window| {
+                    self.native
+                        .get(&input.window)
+                        .is_some_and(|native| native.incarnation != window.incarnation)
+                })
+            {
+                return;
+            }
+            backend.push_input(input)
+        };
         if let Err(error) = result {
             tracing::error!(%error,"input queue rejected event");
             self.error = Some(error.into());
@@ -944,7 +931,12 @@ impl App {
             return Ok(());
         }
         if self.selection.is_none()
-            && self.backend.lock().unwrap().windows.contains_key(&1)
+            && self
+                .backend
+                .lock()
+                .unwrap()
+                .published_windows
+                .contains_key(&1)
             && let Some((display, auth)) = self.selection_config.take()
         {
             let mut selection = crate::selection::SelectionBridge::connect_local(
@@ -968,19 +960,18 @@ impl App {
                 .backend
                 .lock()
                 .map_err(|_| anyhow!("backend mutex poisoned"))?;
-            let windows = backend
-                .windows
-                .iter()
-                .map(|(&id, window)| (id, WindowUpdate::from(window)))
-                .collect::<std::collections::BTreeMap<_, _>>();
+            let windows = backend.published_windows.clone();
             (windows, backend.requested_focus.take())
         };
         if let Some(gpu) = &self.gpu {
             gpu.check()?;
         }
         let previous_windows = self.native.len();
-        self.native
-            .retain(|_, native| windows.get(&native.id).is_some_and(|w| w.mapped));
+        self.native.retain(|_, native| {
+            windows
+                .get(&native.id)
+                .is_some_and(|w| w.mapped && w.incarnation == native.incarnation)
+        });
         self.native_ids.retain(|_, id| self.native.contains_key(id));
         if self.native.len() != previous_windows
             && let Some(gpu) = &self.gpu
@@ -1019,7 +1010,7 @@ impl App {
                     .native
                     .get(&geometry.state.transient_for)
                     .map(|native| native.window.as_ref());
-                let native = pollster::block_on(Native::new(
+                let mut native = pollster::block_on(Native::new(
                     event_loop,
                     id,
                     &window.title,
@@ -1028,6 +1019,7 @@ impl App {
                     &mut self.gpu,
                     &self.ui_wake,
                 ))?;
+                native.incarnation = window.incarnation;
                 self.native_ids.insert(native.window.id(), native.id);
                 self.native.insert(native.id, native);
                 if let Some(gpu) = &self.gpu {
@@ -1045,16 +1037,20 @@ impl App {
                         geometry.state.flags,
                     );
                     input.detail = sequence;
-                    resized.push(input);
+                    resized.push((input, window.incarnation));
                 }
             }
         }
-        for input in resized {
+        for (input, incarnation) in resized {
             let mut backend = self
                 .backend
                 .lock()
                 .map_err(|_| anyhow!("backend mutex poisoned"))?;
-            if backend.windows.contains_key(&input.window) {
+            if backend
+                .windows
+                .get(&input.window)
+                .is_some_and(|window| window.incarnation == incarnation)
+            {
                 backend.push_input(input)?;
             }
         }
@@ -1313,7 +1309,6 @@ impl ApplicationHandler<()> for App {
                         .resize_sync
                         .native_resize((input.x as u32, input.y as u32));
                     if let Some((sequence, (width, height))) = native.resize_sync.take_input() {
-                        native.issued_size = None;
                         input.detail = sequence;
                         input.x = width as f64;
                         input.y = height as f64;
@@ -1376,11 +1371,15 @@ impl ApplicationHandler<()> for App {
                 }
                 let uploaded = {
                     let mut backend = self.backend.lock().unwrap();
-                    backend.windows.get_mut(&id).map(|window| {
-                        native.upload(&window.framebuffer)?;
-                        window.framebuffer.damage = None;
-                        Ok::<_, anyhow::Error>(())
-                    })
+                    backend
+                        .windows
+                        .get_mut(&id)
+                        .filter(|window| window.incarnation == native.incarnation)
+                        .map(|window| {
+                            native.upload(&window.framebuffer)?;
+                            window.framebuffer.damage = None;
+                            Ok::<_, anyhow::Error>(())
+                        })
                 };
                 if let Some(uploaded) = uploaded {
                     match uploaded.and_then(|()| native.present()) {
