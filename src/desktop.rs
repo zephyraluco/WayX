@@ -1011,7 +1011,9 @@ impl ApplicationHandler<()> for App {
     }
     fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
         self.flush_move();
-        let mut layout_changed = self.layout_dirty.swap(false, Ordering::AcqRel);
+        let layout_changed = self.layout_dirty.swap(false, Ordering::AcqRel);
+        #[cfg(not(target_os = "windows"))]
+        let mut layout_changed = layout_changed;
         #[cfg(all(unix, not(target_os = "macos")))]
         if let Some(watch) = &self.host_layout_watch {
             match watch.changed() {
