@@ -11,39 +11,43 @@ static PropertyPtr property(WindowPtr window,Atom atom,int format) {
     return value;
 }
 static uint32_t hint_dimension(CARD32 value) {return value>16384?16384:value;}
-static void sync_window_state(WindowPtr window,WayxWindow *tracked) {
-    WayxWindowState state={0};
+static void sync_window_state(WindowPtr window,WayxWindow *tracked,Bool hints) {
+    WayxWindowState state=tracked->state;
+    if (hints) {
+        memset(&state,0,sizeof(state));
+        state.flags=WAYX_ROOTLESS|(window->overrideRedirect?WAYX_OVERRIDE_REDIRECT:0);
+        PropertyPtr value=property(window,XA_WM_TRANSIENT_FOR,32);
+        if(value && value->size>=1) state.transient_for=((CARD32*)value->data)[0];
+        value=property(window,XA_WM_NORMAL_HINTS,32);
+        if(value && value->size>=15) {
+            CARD32 *h=value->data;CARD32 flags=h[0];
+            if(flags&(1<<4)) {state.min_width=hint_dimension(h[5]);state.min_height=hint_dimension(h[6]);}
+            if(flags&(1<<5)) {state.max_width=hint_dimension(h[7]);state.max_height=hint_dimension(h[8]);}
+            state.base_width=state.min_width;state.base_height=state.min_height;
+            if(flags&(1<<6)) {state.width_inc=hint_dimension(h[9]);state.height_inc=hint_dimension(h[10]);}
+            if(flags&(1<<7)) {
+                state.min_aspect_num=h[11];state.min_aspect_den=h[12];
+                state.max_aspect_num=h[13];state.max_aspect_den=h[14];
+            }
+            if((flags&(1<<8)) && value->size>=17) {state.base_width=hint_dimension(h[15]);state.base_height=hint_dimension(h[16]);}
+        }
+        value=property(window,net_state,32);
+        Bool max_h=FALSE,max_v=FALSE;
+        if(value) for(uint32_t i=0;i<value->size;i++) {
+            Atom atom=((CARD32*)value->data)[i];
+            if(atom==net_above) state.flags|=WAYX_ABOVE;
+            if(atom==net_hidden) state.flags|=WAYX_MINIMIZED;
+            if(atom==net_fullscreen) state.flags|=WAYX_FULLSCREEN;
+            if(atom==net_max_horz) max_h=TRUE;
+            if(atom==net_max_vert) max_v=TRUE;
+        }
+        if(max_h&&max_v) state.flags|=WAYX_MAXIMIZED;
+    }
     int64_t host_x=(int64_t)window->drawable.x-window->borderWidth+desktop_origin_x;
     int64_t host_y=(int64_t)window->drawable.y-window->borderWidth+desktop_origin_y;
     state.x=host_x<INT32_MIN?INT32_MIN:host_x>INT32_MAX?INT32_MAX:host_x;
     state.y=host_y<INT32_MIN?INT32_MIN:host_y>INT32_MAX?INT32_MAX:host_y;
-    state.flags=WAYX_ROOTLESS|(window->overrideRedirect?WAYX_OVERRIDE_REDIRECT:0);
-    PropertyPtr value=property(window,XA_WM_TRANSIENT_FOR,32);
-    if(value && value->size>=1) state.transient_for=((CARD32*)value->data)[0];
-    value=property(window,XA_WM_NORMAL_HINTS,32);
-    if(value && value->size>=15) {
-        CARD32 *h=value->data;CARD32 flags=h[0];
-        if(flags&(1<<4)) {state.min_width=hint_dimension(h[5]);state.min_height=hint_dimension(h[6]);}
-        if(flags&(1<<5)) {state.max_width=hint_dimension(h[7]);state.max_height=hint_dimension(h[8]);}
-        state.base_width=state.min_width;state.base_height=state.min_height;
-        if(flags&(1<<6)) {state.width_inc=hint_dimension(h[9]);state.height_inc=hint_dimension(h[10]);}
-        if(flags&(1<<7)) {
-            state.min_aspect_num=h[11];state.min_aspect_den=h[12];
-            state.max_aspect_num=h[13];state.max_aspect_den=h[14];
-        }
-        if((flags&(1<<8)) && value->size>=17) {state.base_width=hint_dimension(h[15]);state.base_height=hint_dimension(h[16]);}
-    }
-    value=property(window,net_state,32);
-    Bool max_h=FALSE,max_v=FALSE;
-    if(value) for(uint32_t i=0;i<value->size;i++) {
-        Atom atom=((CARD32*)value->data)[i];
-        if(atom==net_above) state.flags|=WAYX_ABOVE;
-        if(atom==net_hidden) state.flags|=WAYX_MINIMIZED;
-        if(atom==net_fullscreen) state.flags|=WAYX_FULLSCREEN;
-        if(atom==net_max_horz) max_h=TRUE;
-        if(atom==net_max_vert) max_v=TRUE;
-    }
-    if(max_h&&max_v) state.flags|=WAYX_MAXIMIZED;
+    tracked->state=state;
     WayxGeometrySnapshot geometry={0};
     geometry.state=state;
     geometry.width=window->drawable.width;geometry.height=window->drawable.height;
@@ -52,7 +56,7 @@ static void sync_window_state(WindowPtr window,WayxWindow *tracked) {
         /* Malformed client hints must not terminate the display server. */
         WayxWindowState fallback={0};fallback.x=state.x;fallback.y=state.y;
         fallback.flags=state.flags;fallback.transient_for=state.transient_for==window->drawable.id?0:state.transient_for;
-        geometry.state=fallback;
+        geometry.state=fallback;tracked->state=fallback;
         if(api->window_geometry(backend,window->drawable.id,&geometry)<0)
             FatalError("WayX geometry snapshot rejected\n");
     }
@@ -72,7 +76,7 @@ static void close_window(WindowPtr window) {
     if(client && client!=serverClient) CloseDownClient(client);
 }
 static void native_window_state(WindowPtr window,uint32_t flags) {
-    metadata_dirty=TRUE;
+    dirty_top(window,WINDOW_HINTS|WINDOW_GEOMETRY);
     CARD32 atoms[6];unsigned int count=0;
     /* Preserve client states that this backend does not own. */
     PropertyPtr old=property(window,net_state,32);

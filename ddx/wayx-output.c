@@ -31,7 +31,6 @@ static int input_socket=-1;
 static Bool handlers_registered;
 static ScreenPtr screen;
 extern DeviceIntPtr wayx_pointer, wayx_keyboard;
-extern int dix_main(int, char **, char **);
 /* Private XKB paths are pinned to the same XLibre revision as this DDX. */
 extern const char *XkbBaseDirectory, *XkbBinDirectory;
 #ifdef HAVE_SETITIMER
@@ -184,7 +183,7 @@ static void flush_backend(void) {
                 if(api->window_constrain(backend,event.window,&width,&height)==0) {
                     /* Geometry acknowledgement must follow this input in the same batch,
                      * including requests constrained back to the existing size. */
-                    metadata_dirty=TRUE;
+                    dirty_top(target,WINDOW_GEOMETRY|WINDOW_PIXELS);
                     XID values[]={width,height};configure_native_window(target,CWWidth|CWHeight,values);
                     native_window_state(target,event.flags);
                 }
@@ -198,7 +197,7 @@ static void flush_backend(void) {
                 event.y-desktop_origin_y>=-32768 && event.y-desktop_origin_y<=32767) {
                 int32_t x=event.x-desktop_origin_x,y=event.y-desktop_origin_y;
                 /* Even an unchanged/rejected request needs a final geometry ack. */
-                metadata_dirty=TRUE;
+                dirty_top(target,WINDOW_GEOMETRY|WINDOW_PIXELS);
                 if (target->drawable.x-target->borderWidth!=x || target->drawable.y-target->borderWidth!=y) {
                     XID values[]={x,y};configure_native_window(target,CWX|CWY,values);
                 }
@@ -217,7 +216,7 @@ static void flush_backend(void) {
             if (tracked) {
                 if (event.kind==WAYX_MOVE) tracked->move_ack=event.detail;
                 else tracked->resize_ack=event.detail;
-                tracked->geometry_pending=TRUE;
+                tracked->geometry_pending=TRUE;dirty_window(tracked,WINDOW_GEOMETRY);
             } else if (!rootless && event.window==1 && event.kind==WAYX_RESIZE) {
                 root_resize_ack=event.detail;root_geometry_pending=TRUE;
             }

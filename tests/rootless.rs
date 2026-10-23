@@ -15,6 +15,26 @@ use x11rb::{
     wrapper::ConnectionExt as _,
 };
 
+// Observe real ABI traffic, not implementation-specific dirty flag values.
+static OUTPUTS: Mutex<Vec<(u32, bool)>> = Mutex::new(Vec::new());
+unsafe extern "C" fn observe_title(
+    handle: *mut Handle,
+    id: u32,
+    data: *const u8,
+    len: usize,
+) -> i32 {
+    OUTPUTS.lock().unwrap().push((id, true));
+    unsafe { (API.window_title)(handle, id, data, len) }
+}
+unsafe extern "C" fn observe_geometry(
+    handle: *mut Handle,
+    id: u32,
+    geometry: *const wayx::window::GeometrySnapshot,
+) -> i32 {
+    OUTPUTS.lock().unwrap().push((id, false));
+    unsafe { (API.window_geometry)(handle, id, geometry) }
+}
+
 fn wait_for(mut predicate: impl FnMut() -> bool) -> Result<()> {
     let until = Instant::now() + Duration::from_secs(5);
     while Instant::now() < until {
@@ -65,7 +85,12 @@ fn rootless_should_preserve_occluded_pixels_and_independent_windows() -> Result<
         let mut argv: Vec<_> = args.iter().map(|s| s.as_ptr().cast_mut()).collect();
         argv.push(std::ptr::null_mut());
         let mut handle = Handle(shared);
-        Ok(unsafe { run(&API, &mut handle, args.len() as i32, argv.as_mut_ptr()) })
+        let api = Api {
+            window_title: observe_title,
+            window_geometry: observe_geometry,
+            ..API
+        };
+        Ok(unsafe { run(&api, &mut handle, args.len() as i32, argv.as_mut_ptr()) })
     });
     let result = (|| -> Result<()> {
         wait_for(|| backend.lock().unwrap().windows.contains_key(&1))?;
@@ -142,6 +167,57 @@ fn rootless_should_preserve_occluded_pixels_and_independent_windows() -> Result<
         ensure!(
             !backend.lock().unwrap().windows.contains_key(&child),
             "Nested children must be composited into their top-level window"
+        );
+        OUTPUTS.lock().unwrap().clear();
+        conn.configure_window(a, &ConfigureWindowAux::new().x(13).y(23))?
+            .check()?;
+        wait_for(|| backend.lock().unwrap().windows[&a].geometry.state.x == 13)?;
+        {
+            let outputs = OUTPUTS.lock().unwrap();
+            ensure!(
+                outputs.iter().any(|&(id, title)| id == a && !title),
+                "Move did not publish geometry"
+            );
+            ensure!(
+                outputs.iter().all(|&(id, title)| id == a && !title),
+                "Move re-read titles or republished another window: {outputs:?}"
+            );
+        }
+        OUTPUTS.lock().unwrap().clear();
+        conn.change_property8(
+            PropMode::REPLACE,
+            a,
+            AtomEnum::WM_NAME,
+            AtomEnum::STRING,
+            b"renamed A",
+        )?
+        .check()?;
+        wait_for(|| backend.lock().unwrap().windows[&a].title == "renamed A")?;
+        {
+            let outputs = OUTPUTS.lock().unwrap();
+            ensure!(
+                !outputs.is_empty() && outputs.iter().all(|&(id, title)| id == a && title),
+                "Title update touched geometry or another window: {outputs:?}"
+            );
+        }
+        OUTPUTS.lock().unwrap().clear();
+        let unrelated = conn
+            .intern_atom(false, b"WAYX_UNRELATED_PROPERTY")?
+            .reply()?
+            .atom;
+        conn.change_property8(
+            PropMode::REPLACE,
+            a,
+            unrelated,
+            AtomEnum::STRING,
+            b"unrelated",
+        )?
+        .check()?;
+        conn.get_input_focus()?.reply()?;
+        std::thread::sleep(Duration::from_millis(30));
+        ensure!(
+            OUTPUTS.lock().unwrap().is_empty(),
+            "Unrelated property caused native metadata traffic"
         );
         // Draw while the entire window is occluded: desktop cropping would fail this check.
         let gc = conn.generate_id()?;

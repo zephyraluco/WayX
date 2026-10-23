@@ -134,7 +134,7 @@ static void apply_host_layout(void) {
         configure_native_window(window,CWX|CWY,values);
         window=sibling;
     }
-    host_layout=next;host_layout_active=TRUE;root_geometry_pending=TRUE;metadata_dirty=TRUE;
+    host_layout=next;host_layout_active=TRUE;root_geometry_pending=TRUE;dirty_all_geometry();
     RRScreenSizeNotify(screen);RRTellChanged(screen);
     ErrorF("WayX host desktop layout applied: %ux%u origin %d,%d\n",next.width,next.height,next.origin_x,next.origin_y);
 }
