@@ -154,3 +154,19 @@ IME cursor 不增加 X11 请求序列号。Windows 使用 GetProcessTimes，Linu
 
 POSIX SIGTERM/SIGINT 使用信号安全的 self-pipe 唤醒 XLibre 等待集；信号即使落在
 UI 线程也能触发正常退出，不依赖周期性 X11 请求碰巧唤醒服务器。
+
+### 双向尺寸同步
+
+ResizeWindow、ChangeBorderWidth 钩子独立标记几何变化，不依赖客户端绘制 Damage。
+原生 resize 输入也显式标脏；DDX 在消费输入后同步窗口及 framebuffer，再发布批次。
+RESIZE 的 detail 携带非零请求序号，output_flush 同时发布最终尺寸和确认序号；
+即使请求被约束到原尺寸，也必须确认。该约定使用 ABI v3 的既有字段。
+
+原生窗口等待最新本地请求的确认期间，不使用旧 framebuffer 尺寸反向调整窗口。
+程序发起的尺寸调整回声不重复发送给 XLibre；过期 Resized 事件先与实际客户区比较。
+创建时确认初始尺寸，忽略尚未达到目标的初始化瞬态；确认在 GPU 初始化前进行，
+避免阻挡初始化期间发生的真实用户调整。最小化期间不强制恢复客户区大小。
+
+Windows 原生 CI 在带认证的 rootless 空载 CPU 检查后，创建不绘制的被动窗口，
+验证五秒几何稳定性、X/宿主客户区一致、连续调整、ICCCM 约束及最小化恢复。
+Linux 同一夹具验证被动窗口稳定性和远端 resize 的双端几何一致性。

@@ -157,6 +157,9 @@ static void flush_backend(void) {
             if(target && event.x>=1 && event.x<=16384 && event.y>=1 && event.y<=16384) {
                 uint32_t width=event.x,height=event.y;
                 if(api->window_constrain(backend,event.window,&width,&height)==0) {
+                    /* Geometry acknowledgement must follow this input in the same batch,
+                     * including requests constrained back to the existing size. */
+                    metadata_dirty=TRUE;
                     XID values[]={width,height};ConfigureWindow(target,CWWidth|CWHeight,values,serverClient);
                     native_window_state(target,event.flags);
                 }

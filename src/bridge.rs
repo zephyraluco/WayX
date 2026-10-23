@@ -178,6 +178,9 @@ pub unsafe extern "C" fn wayx_input_poll(handle: *mut Handle, out: *mut InputEve
                 return Err(());
             }
             if let Some(event) = b.poll_input() {
+                if event.kind == crate::backend::event::RESIZE && event.detail != 0 {
+                    b.resize_acks.insert(event.window, event.detail);
+                }
                 out.write(event);
                 found = true;
             }
@@ -433,5 +436,44 @@ mod batch_tests {
             assert_eq!(output_flush(&mut handle), 0);
             assert_eq!(count.load(Ordering::SeqCst), 1);
         }
+    }
+}
+
+#[cfg(test)]
+mod resize_ack_tests {
+    use super::*;
+    #[test]
+    fn resize_is_acknowledged_only_after_the_output_batch() {
+        let mut backend = Backend::default();
+        backend.create(1, 0, 400, 287).unwrap();
+        backend
+            .push_input(InputEvent {
+                kind: crate::backend::event::RESIZE,
+                window: 1,
+                detail: 17,
+                x: 640.,
+                y: 480.,
+                ..Default::default()
+            })
+            .unwrap();
+        let mut handle = Handle(Arc::new(Mutex::new(backend)));
+        let mut event = InputEvent::default();
+        unsafe {
+            assert_eq!(wayx_input_poll(&mut handle, &mut event), 1);
+        }
+        assert_eq!(handle.0.lock().unwrap().windows[&1].resize_ack, 0);
+        // A server can constrain/reject the request without changing any pixels.
+        unsafe {
+            assert_eq!(output_flush(&mut handle), 0);
+        }
+        let backend = handle.0.lock().unwrap();
+        assert_eq!(backend.windows[&1].resize_ack, 17);
+        assert_eq!(
+            (
+                backend.windows[&1].framebuffer.width,
+                backend.windows[&1].framebuffer.height
+            ),
+            (400, 287)
+        );
     }
 }

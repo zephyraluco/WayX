@@ -1,6 +1,9 @@
 #!/usr/bin/env python3
 """Measure authenticated rootless idle CPU, including the internal WM/XIM connection."""
 import argparse
+import json
+import queue
+import threading
 import os
 from pathlib import Path
 import subprocess
@@ -38,11 +41,124 @@ def cpu_time(process):
     raise RuntimeError("CPU sampling supports Windows and Linux")
 
 
+def geometry_client(binary, process, display, auth):
+    env = os.environ.copy()
+    env.update(WAYX_GEOMETRY_DISPLAY=str(display), WAYX_GEOMETRY_AUTH=str(auth))
+    client = subprocess.Popen([str(binary), "--ignored", "--nocapture"], env=env,
+                              stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+    lines = queue.Queue()
+    def read_lines():
+        for line in client.stdout:
+            lines.put(line.rstrip())
+        lines.put(None)
+    reader = threading.Thread(target=read_lines, daemon=True)
+    reader.start()
+    def expect(message):
+        deadline = time.monotonic() + 15
+        while time.monotonic() < deadline:
+            line = lines.get(timeout=max(.01, deadline-time.monotonic()))
+            if line is None:
+                raise RuntimeError("Geometry client exited before " + message)
+            print(line, flush=True)
+            if line == message:
+                return
+        raise RuntimeError("Geometry client timeout")
+    def command(text):
+        client.stdin.write(text + "\n"); client.stdin.flush()
+        expect("GEOMETRY DONE")
+    try:
+        expect("GEOMETRY READY")
+        time.sleep(1)
+        command("check 400 287 5000")
+        if sys.platform == "win32":
+            import ctypes
+            from ctypes import wintypes
+            user = ctypes.WinDLL("user32", use_last_error=True)
+            user.SetProcessDPIAware()
+            callback_type = ctypes.WINFUNCTYPE(wintypes.BOOL, wintypes.HWND, wintypes.LPARAM)
+            user.EnumWindows.argtypes = [callback_type, wintypes.LPARAM]
+            user.GetWindowThreadProcessId.argtypes = [wintypes.HWND, ctypes.POINTER(wintypes.DWORD)]
+            user.GetWindowTextW.argtypes = [wintypes.HWND, wintypes.LPWSTR, ctypes.c_int]
+            user.GetClientRect.argtypes = [wintypes.HWND, ctypes.POINTER(wintypes.RECT)]
+            user.GetWindowRect.argtypes = [wintypes.HWND, ctypes.POINTER(wintypes.RECT)]
+            user.SetWindowPos.argtypes = [wintypes.HWND, wintypes.HWND, ctypes.c_int, ctypes.c_int, ctypes.c_int, ctypes.c_int, wintypes.UINT]
+            user.ShowWindow.argtypes = [wintypes.HWND, ctypes.c_int]
+            found = []
+            @callback_type
+            def visit(hwnd, _):
+                pid = wintypes.DWORD()
+                user.GetWindowThreadProcessId(hwnd, ctypes.byref(pid))
+                title = ctypes.create_unicode_buffer(256)
+                user.GetWindowTextW(hwnd, title, 256)
+                if pid.value == process.pid and title.value == "WayX geometry regression":
+                    found.append(hwnd)
+                return True
+            user.EnumWindows(visit, 0)
+            if len(found) != 1:
+                raise RuntimeError("Could not find unique native geometry window")
+            hwnd = found[0]
+            def native_size():
+                rect = wintypes.RECT()
+                if not user.GetClientRect(hwnd, ctypes.byref(rect)):
+                    raise ctypes.WinError(ctypes.get_last_error())
+                return rect.right-rect.left, rect.bottom-rect.top
+            def verify_size(width, height):
+                if native_size() != (width, height):
+                    raise RuntimeError(f"Native size {native_size()} differs from X11 {width}x{height}")
+            def resize(width, height):
+                outer = wintypes.RECT()
+                if not user.GetWindowRect(hwnd, ctypes.byref(outer)):
+                    raise ctypes.WinError(ctypes.get_last_error())
+                current = native_size()
+                if not user.SetWindowPos(hwnd, None, 0, 0, width+outer.right-outer.left-current[0], height+outer.bottom-outer.top-current[1], 0x16):
+                    raise ctypes.WinError(ctypes.get_last_error())
+            verify_size(400, 287)
+            resize(720, 510)
+            command("check 720 510 1000"); verify_size(720, 510)
+            for width, height in [(800, 600), (640, 480), (760, 520)]:
+                resize(width, height)
+            command("check 760 520 1000"); verify_size(760, 520)
+            command("hints")
+            time.sleep(.2)
+            resize(703, 497)
+            command("check 696 490 1000"); verify_size(696, 490)
+            command("remote 512 310"); verify_size(512, 310)
+            user.ShowWindow(hwnd, 6); time.sleep(.2)
+            user.ShowWindow(hwnd, 9)
+            command("check 512 310 1000"); verify_size(512, 310)
+        else:
+            command("remote 640 480")
+            command("remote 400 287")
+        client.stdin.write("quit\n"); client.stdin.flush(); client.stdin.close()
+        if client.wait(timeout=5) != 0:
+            raise RuntimeError("Geometry client failed")
+        print("Passive geometry, resize convergence and native/X11 agreement passed.", flush=True)
+    finally:
+        if client.poll() is None:
+            client.kill(); client.wait()
+        reader.join(timeout=2)
+
+
 parser = argparse.ArgumentParser()
 parser.add_argument("--binary", type=Path, required=True)
 parser.add_argument("--core", type=Path, required=True)
 parser.add_argument("--display", type=int, default=199)
+parser.add_argument("--geometry", action="store_true")
 args = parser.parse_args()
+fixture = None
+if args.geometry:
+    build_command = ["cargo", "test", "--locked", "--test", "native_geometry", "--no-run", "--message-format=json"]
+    if sys.platform == "win32":
+        build_command.append("--release")  # Reuse the native CI release dependencies.
+    built = subprocess.run(build_command, capture_output=True, text=True)
+    if built.returncode != 0:
+        raise RuntimeError(built.stdout + built.stderr)
+    for line in built.stdout.splitlines():
+        item = json.loads(line)
+        if item.get("reason") == "compiler-artifact" and item.get("target", {}).get("name") == "native_geometry" and item.get("executable"):
+            fixture = Path(item["executable"])
+    if fixture is None:
+        raise RuntimeError("No native geometry test executable")
 with tempfile.TemporaryDirectory(prefix="wayx-idle-cpu-") as directory:
     auth = Path(directory) / "Xauthority"
     log = Path(directory) / "serve.log"
@@ -72,6 +188,8 @@ with tempfile.TemporaryDirectory(prefix="wayx-idle-cpu-") as directory:
                 print(f"Authenticated rootless idle CPU: {elapsed * 1000:.1f} ms / 2s", flush=True)
                 if elapsed > .05:
                     raise RuntimeError(f"Idle CPU time {elapsed:.3f}s exceeds 50 ms budget")
+            if fixture is not None:
+                geometry_client(fixture, process, args.display, auth)
         finally:
             if process.poll() is None:
                 process.terminate()

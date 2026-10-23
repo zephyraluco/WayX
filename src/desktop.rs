@@ -285,6 +285,8 @@ struct Native {
     cursor: (f64, f64),
     applied_state: Option<WindowState>,
     remote_size: (u32, u32),
+    resize_sync: crate::geometry::ResizeSync,
+    issued_size: Option<(u32, u32)>,
     title: String,
     transient_owner: Option<u32>,
     composing: bool,
@@ -301,11 +303,12 @@ impl Native {
         event_loop: &ActiveEventLoop,
         id: u32,
         title: &str,
-        width: u32,
-        height: u32,
+        size: (u32, u32),
         state: &WindowState,
+        resize_ack: u32,
         owner: Option<&Window>,
     ) -> Result<Self> {
+        let (width, height) = size;
         let popup = state.flags & window_state::OVERRIDE_REDIRECT != 0;
         let mut attributes = Window::default_attributes()
             .with_title(title)
@@ -336,6 +339,15 @@ impl Native {
         }
         let window = Arc::new(event_loop.create_window(attributes)?);
         let _ = owner;
+        let initial_target = state.constrain(width, height);
+        let mut resize_sync =
+            crate::geometry::ResizeSync::new((width, height), initial_target, resize_ack);
+        // Establish the initial size before GPU setup: a real user resize can
+        // arrive while the adapter is being initialized.
+        let initial_size = window.inner_size();
+        if (initial_size.width, initial_size.height) == initial_target {
+            resize_sync.native_resize(initial_target);
+        }
         window.set_ime_allowed(false);
         let instance = wgpu::Instance::new(wgpu::InstanceDescriptor {
             backends: wgpu::util::backend_bits_from_env().unwrap_or(wgpu::Backends::all()),
@@ -364,6 +376,8 @@ impl Native {
             cursor: (0., 0.),
             applied_state: None,
             remote_size: (width, height),
+            resize_sync,
+            issued_size: None,
             title: title.to_owned(),
             transient_owner: None,
             composing: false,
@@ -382,19 +396,16 @@ impl Native {
         width: u32,
         height: u32,
         title: &str,
+        resize_ack: u32,
     ) -> Result<()> {
         if self.title != title {
             self.window.set_title(title);
             self.title = title.to_owned();
         }
-        if self.remote_size != (width, height) {
-            let size = winit::dpi::PhysicalSize::new(width, height);
-            if self.window.inner_size() != size {
-                let _ = self.window.request_inner_size(size);
-            }
-            self.remote_size = (width, height);
-        }
+        self.remote_size = (width, height);
+        self.resize_sync.server_update((width, height), resize_ack);
         if state.flags & window_state::ROOTLESS == 0 {
+            self.sync_geometry(state);
             return Ok(());
         }
         let previous = self.applied_state;
@@ -464,7 +475,29 @@ impl Native {
             }
             self.applied_state = Some(*state);
         }
+        self.sync_geometry(state);
         Ok(())
+    }
+    fn sync_geometry(&mut self, state: &WindowState) {
+        if state.flags & window_state::MINIMIZED != 0 || self.window.is_minimized().unwrap_or(false)
+        {
+            return;
+        }
+        if let Some((width, height)) = self.resize_sync.target() {
+            let size = winit::dpi::PhysicalSize::new(width, height);
+            if self.window.inner_size() == size {
+                self.resize_sync.native_resize((width, height));
+                self.issued_size = None;
+            } else if self.issued_size != Some((width, height)) {
+                self.issued_size = Some((width, height));
+                if let Some(actual) = self.window.request_inner_size(size) {
+                    let constrained = state.constrain(actual.width, actual.height);
+                    self.resize_sync.native_resize(constrained);
+                }
+            }
+        } else {
+            self.issued_size = None;
+        }
     }
     fn x11_id(&self) -> Result<Option<u32>> {
         Ok(match self.window.window_handle()?.as_raw() {
@@ -672,6 +705,7 @@ impl App {
             .map_err(|_| anyhow!("backend mutex poisoned"))?;
         self.native
             .retain(|_, native| backend.windows.get(&native.id).is_some_and(|w| w.mapped));
+        let mut resized = Vec::new();
         for window in backend.windows.values() {
             if !window.mapped {
                 continue;
@@ -686,9 +720,9 @@ impl App {
                     event_loop,
                     window.id,
                     &window.title,
-                    window.framebuffer.width,
-                    window.framebuffer.height,
+                    (window.framebuffer.width, window.framebuffer.height),
                     &window.state,
+                    window.resize_ack,
                     owner,
                 ))?;
                 self.native.insert(native.window.id(), native);
@@ -703,8 +737,18 @@ impl App {
                     window.framebuffer.width,
                     window.framebuffer.height,
                     &window.title,
+                    window.resize_ack,
                 )?;
+                if let Some((sequence, (width, height))) = native.resize_sync.take_input() {
+                    let mut input =
+                        resize_input(native.id, &window.state, width, height, window.state.flags);
+                    input.detail = sequence;
+                    resized.push(input);
+                }
             }
+        }
+        for input in resized {
+            backend.push_input(input)?;
         }
         let owners = self
             .native
@@ -877,19 +921,41 @@ impl ApplicationHandler<()> for App {
                 }
             }
             WindowEvent::Resized(size) => {
-                native.resize_surface(size.width, size.height);
+                let actual = native.window.inner_size();
+                if size.width != 0 && size.height != 0 && actual != size {
+                    return;
+                }
+                native.resize_surface(actual.width, actual.height);
                 native.window.request_redraw();
+                if self.demo {
+                    return;
+                }
                 let flags = (u32::from(native.window.is_maximized()) * window_state::MAXIMIZED)
                     | (u32::from(native.window.is_minimized().unwrap_or(false))
                         * window_state::MINIMIZED)
                     | (u32::from(native.window.fullscreen().is_some()) * window_state::FULLSCREEN);
-                input = resize_input(
-                    id,
-                    &native.applied_state.unwrap_or_default(),
-                    size.width,
-                    size.height,
-                    flags,
-                );
+                let state = native.applied_state.unwrap_or_default();
+                input = resize_input(id, &state, size.width, size.height, flags);
+                if input.kind == event::RESIZE {
+                    native
+                        .resize_sync
+                        .native_resize((input.x as u32, input.y as u32));
+                    if let Some((sequence, (width, height))) = native.resize_sync.take_input() {
+                        native.issued_size = None;
+                        input.detail = sequence;
+                        input.x = width as f64;
+                        input.y = height as f64;
+                    } else if (state.flags ^ flags)
+                        & (window_state::MAXIMIZED
+                            | window_state::MINIMIZED
+                            | window_state::FULLSCREEN)
+                        != 0
+                    {
+                        input.kind = event::STATE;
+                    } else {
+                        return;
+                    }
+                }
             }
             WindowEvent::Moved(position) => {
                 input.kind = event::MOVE;

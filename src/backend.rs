@@ -131,6 +131,7 @@ pub struct Window {
     pub mapped: bool,
     pub state: crate::window::WindowState,
     pub framebuffer: Framebuffer,
+    pub resize_ack: u32,
 }
 
 /// Stable wire events. Keys carry physical USB HID usage codes; DDX maps to X keycodes.
@@ -170,6 +171,7 @@ pub struct Backend {
     events: VecDeque<InputEvent>,
     pub(crate) ui_wake: Option<crate::notify::UiWake>,
     pub(crate) output_pending: bool,
+    pub(crate) resize_acks: BTreeMap<u32, u32>,
     pub worker_exited: bool,
     pub(crate) input_wake: Option<crate::notify::InputWake>,
 }
@@ -180,6 +182,12 @@ impl Backend {
         }
     }
     pub fn flush_output(&mut self) {
+        for (id, sequence) in std::mem::take(&mut self.resize_acks) {
+            if let Some(window) = self.windows.get_mut(&id) {
+                window.resize_ack = sequence;
+                self.output_pending = true;
+            }
+        }
         if std::mem::take(&mut self.output_pending) {
             self.notify_ui();
         }
@@ -217,6 +225,7 @@ impl Backend {
                 mapped: false,
                 state: Default::default(),
                 framebuffer: Framebuffer::new(width, height)?,
+                resize_ack: 0,
             },
         );
         Ok(())
@@ -258,6 +267,7 @@ impl Backend {
             self.destroy(child)?;
         }
         self.windows.remove(&id);
+        self.resize_acks.remove(&id);
         if self.focus == Some(id) {
             self.focus = None;
         }

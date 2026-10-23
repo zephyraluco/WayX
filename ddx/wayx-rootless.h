@@ -171,6 +171,8 @@ WAYX_BOOL_HOOK(ChangeWindowAttributes,ChangeWindowAttributes,(WindowPtr window,u
 WAYX_VOID_HOOK(ReparentWindow,ReparentWindow,(WindowPtr window,WindowPtr parent),(window,parent))
 WAYX_VOID_HOOK(RestackWindow,RestackWindow,(WindowPtr window,WindowPtr sibling),(window,sibling))
 WAYX_VOID_HOOK(SetWindowPixmap,SetWindowPixmap,(WindowPtr window,PixmapPtr pixmap),(window,pixmap))
+WAYX_VOID_HOOK(ResizeWindow,ResizeWindow,(WindowPtr window,int x,int y,unsigned int width,unsigned int height,WindowPtr sibling),(window,x,y,width,height,sibling))
+WAYX_VOID_HOOK(ChangeBorderWidth,ChangeBorderWidth,(WindowPtr window,unsigned int width),(window,width))
 #undef WAYX_BOOL_HOOK
 #undef WAYX_VOID_HOOK
 static void metadata_property(CallbackListPtr *list,void *closure,void *data) {
@@ -180,7 +182,8 @@ static void metadata_property(CallbackListPtr *list,void *closure,void *data) {
 #define WAYX_SCREEN_HOOKS(X) \
     X(CreateWindow,WAYX_CREATE_WINDOW_MEMBER) X(DestroyWindow,DestroyWindow) X(PositionWindow,PositionWindow) X(RealizeWindow,RealizeWindow) \
     X(UnrealizeWindow,UnrealizeWindow) X(ChangeWindowAttributes,ChangeWindowAttributes) X(ReparentWindow,ReparentWindow) \
-    X(RestackWindow,RestackWindow) X(SetWindowPixmap,SetWindowPixmap)
+    X(RestackWindow,RestackWindow) X(SetWindowPixmap,SetWindowPixmap) \
+    X(ResizeWindow,ResizeWindow) X(ChangeBorderWidth,ChangeBorderWidth)
 static void install_window_hooks(void) {
     window_hooks_installed=TRUE;
 #define INSTALL(name,member) saved_##name=screen->member;screen->member=wayx_##name;

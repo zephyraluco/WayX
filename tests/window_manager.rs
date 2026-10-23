@@ -255,6 +255,7 @@ fn window_management_should_route_requests_hints_states_and_cooperative_close() 
                 window: a,
                 x: 135.0,
                 y: 117.0,
+                detail: 17,
                 ..Default::default()
             },
         ] {
@@ -264,6 +265,22 @@ fn window_management_should_route_requests_hints_states_and_cooperative_close() 
             let g = conn.get_geometry(a)?.reply()?;
             Ok((g.x, g.y, g.width, g.height) == (70, 90, 128, 110))
         })?;
+        pump(&mut wm, || {
+            let backend = backend.lock().unwrap();
+            let window = &backend.windows[&a];
+            Ok(window.resize_ack == 17
+                && (window.framebuffer.width, window.framebuffer.height) == (128, 110))
+        })?;
+        // Pure width/height changes must synchronize even when the client paints nothing.
+        for (width, height) in [(160u32, 120u32), (128, 110)] {
+            conn.configure_window(a, &ConfigureWindowAux::new().width(width).height(height))?;
+            conn.flush()?;
+            pump(&mut wm, || {
+                let backend = backend.lock().unwrap();
+                let window = &backend.windows[&a];
+                Ok((window.framebuffer.width, window.framebuffer.height) == (width, height))
+            })?;
+        }
         let state_atom = atom("_NET_WM_STATE")?;
         let above = atom("_NET_WM_STATE_ABOVE")?;
         let full = atom("_NET_WM_STATE_FULLSCREEN")?;

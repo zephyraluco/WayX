@@ -23,3 +23,6 @@ pub mod ime;
 mod preedit;
 
 pub mod notify;
+
+#[cfg(feature = "desktop")]
+mod geometry;
