@@ -51,7 +51,7 @@ jobs:
       if: inputs.platform == 'linux'
       run: |
         apt-get update
-        apt-get install -y ca-certificates python3 python-is-python3 xvfb xauth libvulkan1 mesa-vulkan-drivers \
+        apt-get install -y ca-certificates python3 python-is-python3 fonts-dejavu-core xvfb xauth libvulkan1 mesa-vulkan-drivers \
           libgl1-mesa-dri libglx-mesa0
     - uses: actions/setup-python@v5
       if: inputs.platform != 'linux'

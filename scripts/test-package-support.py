@@ -57,8 +57,16 @@ class PackageTests(unittest.TestCase):
     def test_package_mode_never_falls_back_to_a_build(self):
         self.manifest["executables"] = {"ok":"fixture"}; self.save()
         with patch.dict(os.environ, {"WAYX_TEST_KIT":str(self.root)}):
-            self.assertEqual(prebuilt("ok"), self.file)
+            self.assertEqual(prebuilt("ok"), self.file.resolve())
             with self.assertRaisesRegex(RuntimeError, "missing"): prebuilt("not-packaged")
+
+    @unittest.skipIf(os.name == "nt", "Directory symlinks require extra Windows privileges")
+    def test_fixture_resolves_directory_aliases(self):
+        self.manifest["executables"] = {"ok":"fixture"}; self.save()
+        alias = Path(self.directory.name)/"alias"
+        alias.symlink_to(self.root, target_is_directory=True)
+        with patch.dict(os.environ, {"WAYX_TEST_KIT":str(alias)}):
+            self.assertEqual(prebuilt("ok"), self.file.resolve())
 
 
 if __name__ == "__main__": unittest.main()

@@ -20,7 +20,7 @@ jobs:
     timeout-minutes: 90
     defaults:
       run:
-        shell: bash
+        shell: ${{ inputs.platform == 'windows' && 'pwsh' || 'bash' }}
     env:
       VCPKG_DEFAULT_BINARY_CACHE: ${{ github.workspace }}/build/vcpkg-binary-cache
     outputs:
@@ -140,10 +140,10 @@ jobs:
         retention-days: 7
         overwrite: true
         compression-level: 0
-    - name: Check source formatting and types
-      run: |
-        cargo fmt --check
-        cargo clippy --locked --release --all-targets --all-features -- -D warnings
+    - name: Check source formatting
+      run: cargo fmt --check
+    - name: Check source types and warnings
+      run: cargo clippy --locked --release --all-targets --all-features -- -D warnings
     - name: Check Windows Screen hook syntax
       if: inputs.platform == 'linux'
       run: python scripts/test-ddx-window-hooks.py
