@@ -140,6 +140,11 @@ class PackageTests(unittest.TestCase):
             root = packages/f"{label}-core-runtime-x64-{self.sha}"
             shutil.copytree(self.root, root)
             manifest = dict(self.manifest, platform=platform_name, arch="x86_64")
+            license_file = root/"licenses"/"xlibre-source"/".github"/"arch"/"LICENSE"
+            license_file.parent.mkdir(parents=True)
+            license_file.write_text("Upstream license in a hidden directory")
+            manifest["files"] = {**manifest["files"],
+                                 license_file.relative_to(root).as_posix():digest(license_file)}
             (root/"manifest.json").write_text(json.dumps(manifest))
         output = Path(self.directory.name)/"release-assets"
         command = [sys.executable, str(Path(__file__).with_name("prepare-release.py")),
@@ -148,8 +153,15 @@ class PackageTests(unittest.TestCase):
         self.assertEqual(len(list(output.glob("*.zip"))), 3)
         for path in output.iterdir():
             with zipfile.ZipFile(path) as bundle:
-                self.assertEqual(set(bundle.namelist()), {"fixture", "manifest.json"})
+                self.assertEqual(set(bundle.namelist()),
+                                 {"fixture", "manifest.json", "licenses/xlibre-source/.github/arch/LICENSE"})
         shutil.rmtree(output)
+        license_file.unlink()
+        result = subprocess.run(command, capture_output=True)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn(b"Package file list differs", result.stderr)
+        self.assertFalse(output.exists())
+        license_file.write_text("Upstream license in a hidden directory")
         next(packages.glob("*/fixture")).write_text("corrupted")
         result = subprocess.run(command, capture_output=True)
         self.assertNotEqual(result.returncode, 0)
