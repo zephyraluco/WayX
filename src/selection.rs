@@ -41,7 +41,7 @@ pub struct SelectionBridge {
     receive: Option<Vec<u8>>,
     send: HashMap<(Window, Atom), Send>,
     timestamp: Timestamp,
-    last_poll: Instant,
+    queued_event: Option<Event>,
     manager: Option<crate::wm::WindowManager>,
     pub(crate) ime: Option<crate::ime::ImeBridge>,
 }
@@ -81,8 +81,9 @@ impl SelectionBridge {
             &[],
         )?
         .check()?;
+        let owner = conn.get_selection_owner(atoms.CLIPBOARD)?.reply()?.owner;
         conn.flush()?;
-        Ok(Self {
+        let mut bridge = Self {
             conn: std::sync::Arc::new(conn),
             window,
             atoms,
@@ -94,10 +95,12 @@ impl SelectionBridge {
             receive: None,
             send: HashMap::new(),
             timestamp: 0,
-            last_poll: Instant::now() - Duration::from_secs(1),
+            queued_event: None,
             manager: None,
             ime: None,
-        })
+        };
+        bridge.request(owner)?;
+        Ok(bridge)
     }
     pub fn connect(display: &str, backend: SharedBackend) -> Result<Self> {
         let (conn, screen) = RustConnection::connect(Some(display))?;
@@ -269,6 +272,12 @@ impl SelectionBridge {
         )?;
         Ok(())
     }
+    pub(crate) fn queue_pending_event(&mut self) -> Result<bool> {
+        if self.queued_event.is_none() {
+            self.queued_event = self.conn.poll_for_event()?;
+        }
+        Ok(self.queued_event.is_some())
+    }
     pub fn tick(&mut self) -> Result<()> {
         if (self.pending || self.receive.is_some())
             && self.request_started.elapsed() > Duration::from_secs(30)
@@ -287,18 +296,14 @@ impl SelectionBridge {
             self.revision = revision;
             self.owner = self.window;
         }
-        if self.last_poll.elapsed() > Duration::from_millis(250) {
-            let owner = self
-                .conn
-                .get_selection_owner(self.atoms.CLIPBOARD)?
-                .reply()?
-                .owner;
-            if owner != self.owner {
-                self.request(owner)?;
-            }
-            self.last_poll = Instant::now();
-        }
-        while let Some(event) = self.conn.poll_for_event()? {
+        loop {
+            let event = match self.queued_event.take() {
+                Some(event) => Some(event),
+                None => self.conn.poll_for_event()?,
+            };
+            let Some(event) = event else {
+                break;
+            };
             if let Some(ime) = &mut self.ime
                 && ime.filter_event(&event)?
                 && matches!(event, Event::SelectionRequest(_))
@@ -421,6 +426,11 @@ impl SelectionBridge {
     }
 }
 
+#[derive(Default)]
+struct ReadinessState {
+    generation: usize,
+    armed: bool,
+}
 /// One-shot socket readiness wakes the UI without reading X11 bytes on another thread.
 /// The connection is retained until deregistration and watcher shutdown complete.
 pub(crate) struct ReadinessWatch {
@@ -429,8 +439,18 @@ pub(crate) struct ReadinessWatch {
     stop: std::sync::Arc<std::sync::atomic::AtomicBool>,
     thread: Option<std::thread::JoinHandle<()>>,
     failure: std::sync::Arc<std::sync::Mutex<Option<std::io::Error>>>,
+    armed: std::sync::Arc<std::sync::Mutex<ReadinessState>>,
 }
 impl ReadinessWatch {
+    pub fn pause(&self) -> std::io::Result<()> {
+        let mut armed = self
+            .armed
+            .lock()
+            .map_err(|_| std::io::Error::other("readiness gate poisoned"))?;
+        armed.armed = false;
+        self.poller
+            .modify(self.conn.stream(), polling::Event::none(armed.generation))
+    }
     pub fn arm(&self) -> std::io::Result<()> {
         if let Some(error) = self
             .failure
@@ -440,8 +460,16 @@ impl ReadinessWatch {
         {
             return Err(error);
         }
-        self.poller
-            .modify(self.conn.stream(), polling::Event::readable(1))
+        let mut armed = self
+            .armed
+            .lock()
+            .map_err(|_| std::io::Error::other("readiness gate poisoned"))?;
+        armed.generation = (armed.generation + 1) % (usize::MAX - 1);
+        armed.armed = true;
+        self.poller.modify(
+            self.conn.stream(),
+            polling::Event::readable(armed.generation),
+        )
     }
 }
 impl Drop for ReadinessWatch {
@@ -463,11 +491,13 @@ impl SelectionBridge {
         let poller = Arc::new(polling::Poller::new()?);
         // SAFETY: ReadinessWatch retains conn and removes it before dropping it.
         unsafe {
-            poller.add(self.conn.stream(), polling::Event::readable(1))?;
+            poller.add(self.conn.stream(), polling::Event::none(1))?;
         }
         let stop = Arc::new(AtomicBool::new(false));
         let failure = Arc::new(std::sync::Mutex::new(None));
         let worker_failure = failure.clone();
+        let armed = Arc::new(std::sync::Mutex::new(ReadinessState::default()));
+        let worker_armed = armed.clone();
         let worker_poller = poller.clone();
         let worker_stop = stop.clone();
         let thread = std::thread::Builder::new()
@@ -477,7 +507,15 @@ impl SelectionBridge {
                 while !worker_stop.load(Ordering::Acquire) {
                     events.clear();
                     match worker_poller.wait(&mut events, None) {
-                        Ok(_) if !events.is_empty() => wake(),
+                        Ok(_) if !events.is_empty() => {
+                            if let Ok(mut armed) = worker_armed.lock()
+                                && armed.armed
+                                && events.iter().any(|event| event.key == armed.generation)
+                            {
+                                armed.armed = false;
+                                wake();
+                            }
+                        }
                         Ok(_) => {}
                         Err(error) if error.kind() == std::io::ErrorKind::Interrupted => {}
                         Err(error) => {
@@ -496,6 +534,7 @@ impl SelectionBridge {
             stop,
             thread: Some(thread),
             failure,
+            armed,
         })
     }
 }

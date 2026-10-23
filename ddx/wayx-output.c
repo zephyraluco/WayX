@@ -37,6 +37,7 @@ extern Bool SmartScheduleSignalEnable;
 #endif
 #include "wayx-rootless.h"
 #include "wayx-randr.h"
+#include "wayx-signal.h"
 
 /* One X screen with independently addressable RandR outputs, not separate
  * DISPLAY screens. Coordinates are in the shared desktop framebuffer. */
@@ -106,7 +107,6 @@ static void button(int which,int pressed) {
     valuator_mask_free(&mask);
 }
 static void flush_backend(void) {
-    if (rootless && screen->root) sync_rootless_windows();
     WayxInputEvent event;
     for (int count=0;count<4096 && api->input_poll(backend,&event)==1;count++) {
         WindowPtr target=NULL;
@@ -174,6 +174,7 @@ static void flush_backend(void) {
         default:break;
         }
     }
+    if (rootless && screen->root) sync_rootless_windows();
     if (!rootless && damage && !RegionNil(DamageRegion(damage))) {
         RegionPtr region=DamageRegion(damage);
         BoxPtr boxes=RegionRects(region);
@@ -202,6 +203,7 @@ static void backend_input(int fd,int ready,void *data) {
     flush_backend();
 }
 static void register_backend(void) {
+    install_signal_wake();
     input_socket=api->input_fd(backend);
     if (input_socket<0 || !SetNotifyFd(input_socket,backend_input,X_NOTIFY_READ,NULL))
         FatalError("WayX could not register input notification socket\n");
@@ -264,6 +266,7 @@ void InitOutput(int argc,char **argv) {
     if (!AddCallback(&PostInitRootWindowCallback,attach_screen,NULL)) FatalError("WayX failed to register screen callback\n");
 }
 void ddxGiveUp(enum ExitCode error) {
+    remove_signal_wake();
     if (input_socket>=0) {RemoveNotifyFd(input_socket);input_socket=-1;}
     if (handlers_registered) {RemoveBlockAndWakeupHandlers(backend_block,backend_wakeup,NULL);handlers_registered=FALSE;}
     if (rootless && screen) remove_window_hooks();

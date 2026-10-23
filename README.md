@@ -379,5 +379,12 @@ cargo test --locked --test glx -- --ignored --nocapture
 
 ABI v3 增加通知接口，客户端和 XLibre 核心须一同更新；旧核心不能与新客户端混用。
 `--frames` 是自动化测试模式，会主动请求后续帧，不用于测量空闲呈现行为。
-Linux 的 `scripts/test-native.py --core ...` 包含 rootful/rootless 静止停止呈现、
-新增 Damage 后恢复呈现及正常退出检查；Windows/macOS 行为仍需对应原生 CI 和实机验证。
+Linux 的 `scripts/test-native.py --core ...` 包含带认证的 rootful/rootless 空载和静止
+窗口 CPU 时间检查（预热后 2 秒内低于 50 ms）、新增 Damage 后恢复呈现及正常退出检查。
+Windows CI 使用 `scripts/test-idle-cpu.py --binary ... --core ...` 测量带认证且无外部
+窗口的 rootless 进程；实际机器上的 CPU、内存和拖动体验仍需实测。
+
+内部 WM 的窗口堆叠由事件维护；IME 光标结果按焦点、几何、父子关系及 XIM 事件失效，
+仅在真实预编辑/提交时重新校验 X 焦点。X11 剪贴板 owner 变化使用 XFixes 通知。
+空闲 UI 同步不再反复发送这些查询；同步处理期间暂停 readiness 通知，并处理期间
+缓存的 X11 事件后才重新注册，避免协议应答造成自激唤醒。

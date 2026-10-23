@@ -131,3 +131,26 @@ UI 使用 EventLoopProxy 的合并事件，消费前清除 pending，避免发�
 重新注册 readiness。销毁时先停止 watcher 并注销，再释放连接。工作线程完成（含失败）
 同样通知 UI。仅保留原生剪贴板兼容检查的 250 ms 截止时间与暂时性 surface 失败的
 按需重试截止时间；正常静止窗口不提交画面。系统曝光/恢复、尺寸及 IME 变化仍能重绘。
+
+### 避免协议应答触发自激唤醒
+
+WM 初次同步查询窗口树，此后使用 Create/Destroy/Reparent/Configure 通知维护完整堆叠，
+再过滤 managed clients；仅无法定位 ConfigureNotify 的兄弟窗口时重新查询，不在空闲 tick 查询。
+IME 被动 cursor 查询使用按 native ID 的缓存；XIM、焦点及结构事件使缓存失效。观察实际
+焦点及其祖先的 Focus/Structure/Substructure 通知，保留已有事件掩码。预编辑和文本提交
+直接校验实际 X 焦点，防止尚未消费的焦点通知造成串窗。
+
+XFixes 订阅完成后读取初始 clipboard owner，此后依赖 selection 通知，删除周期性
+GetSelectionOwner。原生剪贴板兼容检查仍保留，但不会因此制造 X11 查询。
+
+UI 只在 about_to_wait 执行一轮同步。同步前暂停一次性 readiness，在同一门锁下
+检查通知是否仍属于当前注册代次，忽略已过期应答通知。同步查询可能把事件读入
+x11rb 的内部缓存，重新注册 socket 前先检查并保留这类事件，安排下一批处理；
+不能只等待 socket 再次可读。DDX 先消费输入，再同步本批输出；没有 metadata 或
+Damage 时跳过顶层窗口扫描。
+
+回归验证除了静止不 present，也检查累计进程 CPU 时间，以及重复 100 次 WM tick/
+IME cursor 不增加 X11 请求序列号。Windows 使用 GetProcessTimes，Linux 使用 /proc。
+
+POSIX SIGTERM/SIGINT 使用信号安全的 self-pipe 唤醒 XLibre 等待集；信号即使落在
+UI 线程也能触发正常退出，不依赖周期性 X11 请求碰巧唤醒服务器。

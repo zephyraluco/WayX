@@ -25,6 +25,20 @@ displays = [i for i in range(200, 250) if not Path(f"/tmp/.X11-unix/X{i}").exist
 if len(displays) < 2:
     parser.error("no free test display numbers")
 host, core_display = displays
+
+def idle_cpu(process, seconds=2, limit=.05):
+    def cpu_time():
+        fields = Path(f"/proc/{process.pid}/stat").read_text().rsplit(") ", 1)[1].split()
+        return (int(fields[11]) + int(fields[12])) / os.sysconf("SC_CLK_TCK")
+    before = cpu_time()
+    time.sleep(seconds)
+    if process.poll() is not None:
+        raise RuntimeError("Idle server exited during CPU sampling")
+    elapsed = cpu_time() - before
+    print(f"Idle CPU: {elapsed * 1000:.1f} ms over {seconds}s", flush=True)
+    if elapsed > limit:
+        raise RuntimeError(f"Idle CPU time {elapsed:.3f}s exceeds {limit:.3f}s budget")
+
 with tempfile.TemporaryDirectory(prefix="wayx-native-") as temp:
     env = os.environ.copy()
     env.update(DISPLAY=f":{host}", WINIT_UNIX_BACKEND="x11", XDG_RUNTIME_DIR=temp)
@@ -114,7 +128,7 @@ with tempfile.TemporaryDirectory(prefix="wayx-native-") as temp:
             if args.core:
                 idle_client = Path(temp) / "idle-client"
                 subprocess.run(["cc", "-std=c11", "-Wall", "-Wextra", "-Werror", "tests/idle-client.c", *flags, "-o", str(idle_client)], check=True)
-                for rootless_mode in (False, True):
+                for rootless_mode in (True, False):
                     idle_log = Path(temp) / f"idle-{rootless_mode}.log"
                     idle_env = env.copy()
                     idle_env.update(RUST_LOG="wayx=debug", NO_COLOR="1")
@@ -134,6 +148,9 @@ with tempfile.TemporaryDirectory(prefix="wayx-native-") as temp:
                                 time.sleep(.05)
                             else:
                                 raise RuntimeError("Idle server readiness timeout")
+                            # Includes -auth: this enables the internal WM/XIM/selection connection.
+                            time.sleep(1)
+                            idle_cpu(idle)
                             client_env = idle_env.copy()
                             client_env["XAUTHORITY"] = str(auth)
                             client = subprocess.Popen([str(idle_client), f":{core_display}"], env=client_env, stdin=subprocess.PIPE, stdout=subprocess.PIPE)
@@ -145,7 +162,7 @@ with tempfile.TemporaryDirectory(prefix="wayx-native-") as temp:
                             before = idle_log.read_text().count("frame presented")
                             if before == 0:
                                 raise RuntimeError("Idle test never presented a frame")
-                            time.sleep(1)
+                            idle_cpu(idle)
                             if idle_log.read_text().count("frame presented") != before:
                                 raise RuntimeError("Static window kept presenting frames")
                             client.stdin.write(b"d")

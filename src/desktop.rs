@@ -640,6 +640,9 @@ impl App {
         Ok(())
     }
     fn sync_inner(&mut self, event_loop: &ActiveEventLoop) -> Result<()> {
+        if let Some(watch) = &self.selection_watch {
+            watch.pause()?;
+        }
         if self.finish_worker(event_loop)? {
             return Ok(());
         }
@@ -658,6 +661,7 @@ impl App {
             }
             self.selection_watch = Some(selection.watch(self.ui_wake.clone())?);
             self.selection = Some(selection);
+            tracing::debug!("internal X11 bridge ready");
         }
         if let Some(selection) = &mut self.selection {
             selection.tick()?;
@@ -806,20 +810,20 @@ impl App {
                 native.window.request_redraw();
             }
         }
-        if let Some(watch) = &self.selection_watch {
+        if let Some(selection) = &mut self.selection
+            && selection.queue_pending_event()?
+        {
+            (self.ui_wake)();
+        } else if let Some(watch) = &self.selection_watch {
             watch.arm()?;
         }
         Ok(())
     }
 }
 impl ApplicationHandler<()> for App {
-    fn user_event(&mut self, event_loop: &ActiveEventLoop, (): ()) {
-        // Clear before reading state so a concurrent producer can schedule a new wake.
+    fn user_event(&mut self, _event_loop: &ActiveEventLoop, (): ()) {
+        // Coalesce the whole event batch; about_to_wait performs one synchronization.
         self.wake_pending.store(false, Ordering::Release);
-        if let Err(error) = self.sync(event_loop) {
-            self.error = Some(error);
-            event_loop.exit();
-        }
     }
     fn resumed(&mut self, event_loop: &ActiveEventLoop) {
         self.clipboard = match arboard::Clipboard::new() {

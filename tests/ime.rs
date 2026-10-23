@@ -126,6 +126,47 @@ fn xim_should_deliver_unicode_preedit_and_follow_context_focus() -> Result<()> {
                     }
                     if stage == 1 && ime.cursor(windows.0)?.is_some() {
                         ensure!(ime.cursor(windows.0)? == Some((25, 40)));
+                        let before = conn.get_input_focus()?;
+                        let sequence = before.sequence_number();
+                        before.reply()?;
+                        for _ in 0..100 {
+                            ensure!(ime.cursor(windows.0)? == Some((25, 40)));
+                        }
+                        let after = conn.get_input_focus()?;
+                        ensure!(
+                            after.sequence_number() == sequence + 1,
+                            "Cached IME cursor sent idle X11 requests"
+                        );
+                        after.reply()?;
+                        // X focus can move before its notification is consumed. A cached
+                        // passive cursor must never authorize text to the old window.
+                        conn.set_input_focus(
+                            x11rb::protocol::xproto::InputFocus::PARENT,
+                            windows.1,
+                            x11rb::CURRENT_TIME,
+                        )?
+                        .check()?;
+                        ensure!(matches!(
+                            ime.commit(windows.0, "stale focus"),
+                            Err(ImeError::NoContext)
+                        ));
+                        while let Some(event) = conn.poll_for_event()? {
+                            ime.filter_event(&event)?;
+                        }
+                        ensure!(
+                            ime.cursor(windows.0)?.is_none(),
+                            "FocusOut did not invalidate cursor cache"
+                        );
+                        conn.set_input_focus(
+                            x11rb::protocol::xproto::InputFocus::PARENT,
+                            windows.0,
+                            x11rb::CURRENT_TIME,
+                        )?
+                        .check()?;
+                        while let Some(event) = conn.poll_for_event()? {
+                            ime.filter_event(&event)?;
+                        }
+                        ensure!(ime.cursor(windows.0)? == Some((25, 40)));
                         ensure!(matches!(
                             ime.commit(windows.1, "wrong window"),
                             Err(ImeError::NoContext)

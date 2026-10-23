@@ -72,6 +72,12 @@ static void upload_window_rect(WindowPtr window, WayxWindow *tracked, BoxRec rec
         FatalError("WayX rejected redirected window damage\n");
 }
 static void sync_rootless_windows(void) {
+    if (!metadata_dirty) {
+        Bool dirty=FALSE;
+        for (WayxWindow *entry=wayx_windows;entry;entry=entry->next)
+            if (entry->mapped && (!entry->damage || !RegionNil(DamageRegion(entry->damage)))) {dirty=TRUE;break;}
+        if (!dirty) return;
+    }
     for (WayxWindow *entry=wayx_windows;entry;entry=entry->next) entry->seen=FALSE;
     for (WindowPtr window=screen->root->firstChild;window;window=window->nextSib) {
         if (window->drawable.class!=InputOutput) continue;

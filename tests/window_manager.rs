@@ -79,6 +79,56 @@ fn window_management_should_route_requests_hints_states_and_cooperative_close() 
             ensure!(Instant::now() < deadline, "Server did not start");
             std::thread::sleep(Duration::from_millis(5));
         }
+        // A reply may wake a socket watcher. Idle WM ticks must not manufacture replies.
+        {
+            let (audit, screen) = x11rb::connect(Some(if cfg!(windows) {
+                "127.0.0.1:195"
+            } else {
+                ":195"
+            }))?;
+            let root = audit.setup().roots[screen].root;
+            let owner = audit.generate_id()?;
+            audit
+                .create_window(
+                    0,
+                    owner,
+                    root,
+                    0,
+                    0,
+                    1,
+                    1,
+                    0,
+                    WindowClass::INPUT_ONLY,
+                    0,
+                    &CreateWindowAux::new(),
+                )?
+                .check()?;
+            let mut manager = wayx::wm::WindowManager::new(&audit, screen, owner, backend.clone())?;
+            manager.tick(&audit)?;
+            let before = audit.get_input_focus()?;
+            let sequence = before.sequence_number();
+            before.reply()?;
+            for _ in 0..100 {
+                manager.tick(&audit)?;
+            }
+            let after = audit.get_input_focus()?;
+            ensure!(
+                after.sequence_number() == sequence + 1,
+                "Idle WM tick sent X11 queries"
+            );
+            after.reply()?;
+            let selection = audit.intern_atom(false, b"WM_S0")?.reply()?.atom;
+            audit
+                .set_selection_owner(0u32, selection, x11rb::CURRENT_TIME)?
+                .check()?;
+            audit
+                .change_window_attributes(
+                    root,
+                    &ChangeWindowAttributesAux::new().event_mask(EventMask::NO_EVENT),
+                )?
+                .check()?;
+            audit.destroy_window(owner)?.check()?;
+        }
         let mut wm = SelectionBridge::connect(
             if cfg!(windows) {
                 "127.0.0.1:195"
@@ -175,8 +225,8 @@ fn window_management_should_route_requests_hints_states_and_cooperative_close() 
                 .get_property(false, root, list, AtomEnum::WINDOW, 0, 32)?
                 .reply()?
                 .value32()
-                .unwrap()
-                .collect();
+                .map(Iterator::collect)
+                .unwrap_or_default();
             Ok(ids.contains(&a) && ids.contains(&b) && !ids.contains(&popup))
         })?;
         conn.configure_window(
@@ -287,6 +337,44 @@ fn window_management_should_route_requests_hints_states_and_cooperative_close() 
                 .value32()
                 .is_some_and(|mut ids| ids.next() == Some(b)))
         })?;
+        let stacking = atom("_NET_CLIENT_LIST_STACKING")?;
+        let check_stacking = |wm: &mut SelectionBridge, managed: &[u32]| -> Result<()> {
+            pump(wm, || {
+                let expected: Vec<_> = conn
+                    .query_tree(root)?
+                    .reply()?
+                    .children
+                    .into_iter()
+                    .filter(|id| managed.contains(id))
+                    .collect();
+                let actual: Vec<_> = conn
+                    .get_property(false, root, stacking, AtomEnum::WINDOW, 0, 1024)?
+                    .reply()?
+                    .value32()
+                    .map(Iterator::collect)
+                    .unwrap_or_default();
+                Ok(actual == expected && actual.len() == managed.len())
+            })
+        };
+        check_stacking(&mut wm, &[a, b])?;
+        for (id, sibling, mode) in [
+            (a, b, StackMode::ABOVE),
+            (popup, a, StackMode::BELOW),
+            (b, popup, StackMode::BELOW),
+        ] {
+            conn.configure_window(
+                id,
+                &ConfigureWindowAux::new().sibling(sibling).stack_mode(mode),
+            )?;
+            conn.flush()?;
+            check_stacking(&mut wm, &[a, b])?;
+        }
+        conn.reparent_window(b, a, 0, 0)?.check()?;
+        check_stacking(&mut wm, &[a])?;
+        conn.reparent_window(b, root, 30, 30)?.check()?;
+        conn.map_window(b)?;
+        conn.flush()?;
+        check_stacking(&mut wm, &[a, b])?;
         backend.lock().unwrap().push_input(InputEvent {
             kind: event::CLOSE,
             window: a,

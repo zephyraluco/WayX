@@ -1,5 +1,9 @@
 //! Native IME to XIM adapter. Text travels as XIM strings, never fabricated keys.
-use std::{collections::HashMap, sync::Arc};
+use std::{
+    cell::RefCell,
+    collections::{HashMap, HashSet},
+    sync::Arc,
+};
 use thiserror::Error;
 use x11rb::{
     connection::Connection,
@@ -180,6 +184,8 @@ pub struct ImeBridge {
     root: u32,
     transports: HashMap<u32, u32>,
     composition: Option<(u32, Key)>,
+    cursor_cache: RefCell<HashMap<u32, Option<(i16, i16)>>>,
+    observed: RefCell<HashSet<u32>>,
 }
 impl ImeBridge {
     pub fn new(conn: Arc<RustConnection>, screen: usize) -> Result<Self, ImeError> {
@@ -195,19 +201,38 @@ impl ImeBridge {
         }
         let server = X11rbServer::init(conn, screen, "wayx", xim::ALL_LOCALES)?;
         server.conn().flush()?;
-        Ok(Self {
+        let bridge = Self {
             server,
             connections: XimConnections::new(),
             handler: Handler::default(),
             root,
             transports: HashMap::new(),
             composition: None,
-        })
+            cursor_cache: RefCell::new(HashMap::new()),
+            observed: RefCell::new(HashSet::new()),
+        };
+        bridge.observe_window(root)?;
+        Ok(bridge)
     }
     pub fn filter_event(&mut self, event: &Event) -> Result<bool, ImeError> {
         let handled = self
             .server
             .filter_event(event, &mut self.connections, &mut self.handler)?;
+        if handled
+            || matches!(
+                event,
+                Event::FocusIn(_)
+                    | Event::FocusOut(_)
+                    | Event::ConfigureNotify(_)
+                    | Event::ReparentNotify(_)
+                    | Event::DestroyNotify(_)
+                    | Event::CreateNotify(_)
+                    | Event::MapNotify(_)
+                    | Event::UnmapNotify(_)
+            )
+        {
+            self.cursor_cache.borrow_mut().clear();
+        }
         let mut dead = Vec::new();
         if let Event::ClientMessage(message) = event {
             for id in self.handler.contexts.keys() {
@@ -241,6 +266,7 @@ impl ImeBridge {
             }
         }
         if let Event::DestroyNotify(e) = event {
+            self.observed.borrow_mut().remove(&e.window);
             dead.push(e.window);
             self.handler
                 .contexts
@@ -270,9 +296,46 @@ impl ImeBridge {
         }
         Ok(handled)
     }
+    fn observe_window(&self, window: u32) -> Result<bool, ImeError> {
+        if self.observed.borrow().contains(&window) {
+            return Ok(true);
+        }
+        let conn = self.server.conn();
+        let attrs = match conn.get_window_attributes(window)?.reply() {
+            Ok(attrs) => attrs,
+            Err(x11rb::errors::ReplyError::X11Error(_)) => return Ok(false),
+            Err(error) => return Err(error.into()),
+        };
+        match conn
+            .change_window_attributes(
+                window,
+                &ChangeWindowAttributesAux::new().event_mask(
+                    attrs.your_event_mask
+                        | EventMask::FOCUS_CHANGE
+                        | EventMask::STRUCTURE_NOTIFY
+                        | EventMask::SUBSTRUCTURE_NOTIFY,
+                ),
+            )?
+            .check()
+        {
+            Ok(()) => {}
+            Err(x11rb::errors::ReplyError::X11Error(_)) => return Ok(false),
+            Err(error) => return Err(error.into()),
+        }
+        self.observed.borrow_mut().insert(window);
+        Ok(true)
+    }
     /// Rootful windows use the backend's sentinel ID 1; rootless IDs are XIDs.
     /// Require the active IC and actual X focus to belong to this native window.
     pub fn cursor(&self, native: u32) -> Result<Option<(i16, i16)>, ImeError> {
+        if let Some(cursor) = self.cursor_cache.borrow().get(&native) {
+            return Ok(*cursor);
+        }
+        let cursor = self.query_cursor(native)?;
+        self.cursor_cache.borrow_mut().insert(native, cursor);
+        Ok(cursor)
+    }
+    fn query_cursor(&self, native: u32) -> Result<Option<(i16, i16)>, ImeError> {
         let Some(context) = self
             .handler
             .focused
@@ -292,6 +355,9 @@ impl ImeBridge {
         let mut current = focus;
         let mut found_context = false;
         for _ in 0..128 {
+            if !self.observe_window(current)? {
+                return Ok(None);
+            }
             found_context |= current == context.window;
             if current == target {
                 break;
@@ -332,7 +398,9 @@ impl ImeBridge {
         if text.len() > 8192 {
             return Err(ImeError::TextTooLong);
         }
-        if self.cursor(native)?.is_none() {
+        // Text-producing native events must revalidate actual X focus even if its
+        // notification is still queued. Only passive UI synchronization uses the cache.
+        if self.query_cursor(native)?.is_none() {
             return Err(ImeError::NoContext);
         }
         if !text.is_empty() {
@@ -411,7 +479,9 @@ impl ImeBridge {
             self.composition = None;
             return Err(ImeError::NoContext);
         }
-        if self.cursor(native)?.is_none() {
+        // Text-producing native events must revalidate actual X focus even if its
+        // notification is still queued. Only passive UI synchronization uses the cache.
+        if self.query_cursor(native)?.is_none() {
             return Err(ImeError::NoContext);
         }
         if let Some(context) = self

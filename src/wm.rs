@@ -45,6 +45,8 @@ pub struct WindowManager {
     backend: SharedBackend,
     clients: Vec<Window>,
     stack: Vec<Window>,
+    root_stack: Vec<Window>,
+    stack_refresh: bool,
     focus: Window,
 }
 impl WindowManager {
@@ -65,7 +67,9 @@ impl WindowManager {
             &ChangeWindowAttributesAux::new().event_mask(
                 EventMask::SUBSTRUCTURE_REDIRECT
                     | EventMask::SUBSTRUCTURE_NOTIFY
-                    | EventMask::PROPERTY_CHANGE,
+                    | EventMask::PROPERTY_CHANGE
+                    | EventMask::FOCUS_CHANGE
+                    | EventMask::STRUCTURE_NOTIFY,
             ),
         )?
         .check()?;
@@ -167,6 +171,8 @@ impl WindowManager {
             backend,
             clients: Vec::new(),
             stack: Vec::new(),
+            root_stack: Vec::new(),
+            stack_refresh: true,
             focus: 0,
         })
     }
@@ -210,6 +216,32 @@ impl WindowManager {
     /// Handle management events before the Selection adapter consumes other events.
     pub fn handle(&mut self, conn: &RustConnection, event: &Event) -> Result<bool, WmError> {
         match event {
+            Event::CreateNotify(e) if e.parent == self.root => {
+                self.root_stack.retain(|id| *id != e.window);
+                self.root_stack.push(e.window);
+            }
+            Event::DestroyNotify(e) if e.event == self.root => {
+                self.root_stack.retain(|id| *id != e.window);
+            }
+            Event::ReparentNotify(e) => {
+                self.root_stack.retain(|id| *id != e.window);
+                if e.parent == self.root {
+                    self.root_stack.push(e.window);
+                }
+            }
+            Event::ConfigureNotify(e) if e.event == self.root && e.response_type & 0x80 == 0 => {
+                // QueryTree/EWMH are bottom-to-top; above_sibling is the sibling below us.
+                self.root_stack.retain(|id| *id != e.window);
+                if e.above_sibling == 0 {
+                    self.root_stack.insert(0, e.window);
+                } else if let Some(index) =
+                    self.root_stack.iter().position(|id| *id == e.above_sibling)
+                {
+                    self.root_stack.insert(index + 1, e.window);
+                } else {
+                    self.stack_refresh = true;
+                }
+            }
             Event::MapRequest(e) => {
                 conn.map_window(e.window)?;
                 conn.change_property32(
@@ -354,9 +386,11 @@ impl WindowManager {
         if clients != self.clients {
             for id in &clients {
                 if !self.clients.contains(id) {
+                    let attrs = conn.get_window_attributes(*id)?.reply()?;
                     conn.change_window_attributes(
                         *id,
-                        &ChangeWindowAttributesAux::new().event_mask(EventMask::FOCUS_CHANGE),
+                        &ChangeWindowAttributesAux::new()
+                            .event_mask(attrs.your_event_mask | EventMask::FOCUS_CHANGE),
                     )?;
                 }
             }
@@ -369,11 +403,14 @@ impl WindowManager {
             )?;
             self.clients = clients;
         }
-        let stack: Vec<_> = conn
-            .query_tree(self.root)?
-            .reply()?
-            .children
-            .into_iter()
+        if self.stack_refresh {
+            self.root_stack = conn.query_tree(self.root)?.reply()?.children;
+            self.stack_refresh = false;
+        }
+        let stack: Vec<_> = self
+            .root_stack
+            .iter()
+            .copied()
             .filter(|id| self.clients.contains(id))
             .collect();
         if stack != self.stack {
