@@ -168,8 +168,23 @@ pub struct Backend {
     pub clipboard: String,
     pub clipboard_revision: u64,
     events: VecDeque<InputEvent>,
+    pub(crate) ui_wake: Option<crate::notify::UiWake>,
+    pub(crate) output_pending: bool,
+    pub worker_exited: bool,
+    pub(crate) input_wake: Option<crate::notify::InputWake>,
 }
 impl Backend {
+    pub fn notify_ui(&self) {
+        if let Some(wake) = &self.ui_wake {
+            wake();
+        }
+    }
+    pub fn flush_output(&mut self) {
+        if std::mem::take(&mut self.output_pending) {
+            self.notify_ui();
+        }
+    }
+
     pub fn create(&mut self, id: u32, parent: u32, width: u32, height: u32) -> Result<(), Error> {
         if id == 0 || self.windows.contains_key(&id) {
             return Err(Error::DuplicateWindow);
@@ -288,10 +303,25 @@ impl Backend {
             }
         }
         self.events.push_back(input);
+        if let Some(wake) = &mut self.input_wake {
+            // A failed wake must never silently strand input in a sleeping server.
+            if let Err(error) = wake.signal() {
+                tracing::error!(%error, "input wake failed");
+                return Err(Error::InvalidInput);
+            }
+        }
         Ok(())
     }
     pub fn poll_input(&mut self) -> Option<InputEvent> {
         self.events.pop_front()
+    }
+    pub(crate) fn rearm_input(&mut self) -> Result<(), ()> {
+        if !self.events.is_empty()
+            && let Some(wake) = &mut self.input_wake
+        {
+            wake.signal().map_err(|_| ())?;
+        }
+        Ok(())
     }
     pub fn set_clipboard(&mut self, text: &str) -> Result<(), Error> {
         if text.len() > 16 * 1024 * 1024 || text.contains('\0') {
@@ -300,6 +330,7 @@ impl Backend {
         if self.clipboard != text {
             self.clipboard = text.to_owned();
             self.clipboard_revision = self.clipboard_revision.wrapping_add(1);
+            self.notify_ui();
         }
         Ok(())
     }

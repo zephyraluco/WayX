@@ -5,7 +5,7 @@
 #ifdef __cplusplus
 extern "C" {
 #endif
-#define WAYX_ABI_VERSION 2u
+#define WAYX_ABI_VERSION 3u
 typedef struct WayxBackend WayxBackend;
 enum WayxEventKind { WAYX_MOTION=1, WAYX_BUTTON, WAYX_KEY, WAYX_SCROLL,
     WAYX_FOCUS, WAYX_CLOSE, WAYX_RESIZE, WAYX_TEXT, WAYX_CLIPBOARD, WAYX_SHUTDOWN, WAYX_MOVE, WAYX_STATE };
@@ -40,6 +40,10 @@ typedef struct WayxApi {
     int32_t (*clipboard_get)(WayxBackend*,uint8_t*,size_t,size_t*);
     int32_t (*window_state)(WayxBackend*,uint32_t,const WayxWindowState*);
     int32_t (*window_constrain)(WayxBackend*,uint32_t,uint32_t*,uint32_t*);
+    /* Borrowed socket; register with the server wait set, never close it. */
+    int32_t (*input_fd)(WayxBackend*);
+    int32_t (*input_ack)(WayxBackend*);
+    int32_t (*output_flush)(WayxBackend*);
 } WayxApi;
 const WayxApi *wayx_get_api(void);
 WayxBackend *wayx_backend_new(void);

@@ -5,6 +5,7 @@ import os
 from pathlib import Path
 import shutil
 import shlex
+import select
 import subprocess
 import tempfile
 import time
@@ -110,6 +111,70 @@ with tempfile.TemporaryDirectory(prefix="wayx-native-") as temp:
                     except subprocess.TimeoutExpired:
                         rootless.kill()
                         rootless.wait()
+            if args.core:
+                idle_client = Path(temp) / "idle-client"
+                subprocess.run(["cc", "-std=c11", "-Wall", "-Wextra", "-Werror", "tests/idle-client.c", *flags, "-o", str(idle_client)], check=True)
+                for rootless_mode in (False, True):
+                    idle_log = Path(temp) / f"idle-{rootless_mode}.log"
+                    idle_env = env.copy()
+                    idle_env.update(RUST_LOG="wayx=debug", NO_COLOR="1")
+                    with idle_log.open("w") as output:
+                        command = [binary, "serve", "--core", str(args.core.resolve())]
+                        if rootless_mode:
+                            command.append("--rootless")
+                        command += ["--", f":{core_display}", "-screen", "0", "1280x800x24", "-crtcs", "1@1280x800", "-nolisten", "tcp", "-auth", str(auth)]
+                        idle = subprocess.Popen(command, env=idle_env, stdout=output, stderr=output)
+                        client = None
+                        try:
+                            for _ in range(100):
+                                if idle.poll() is not None:
+                                    raise RuntimeError(idle_log.read_text())
+                                if Path(f"/tmp/.X11-unix/X{core_display}").exists():
+                                    break
+                                time.sleep(.05)
+                            else:
+                                raise RuntimeError("Idle server readiness timeout")
+                            client_env = idle_env.copy()
+                            client_env["XAUTHORITY"] = str(auth)
+                            client = subprocess.Popen([str(idle_client), f":{core_display}"], env=client_env, stdin=subprocess.PIPE, stdout=subprocess.PIPE)
+                            def drawn():
+                                if not select.select([client.stdout], [], [], 5)[0] or client.stdout.readline() != b"DRAWN\n":
+                                    raise RuntimeError("Idle test client did not draw")
+                            drawn()
+                            time.sleep(1)
+                            before = idle_log.read_text().count("frame presented")
+                            if before == 0:
+                                raise RuntimeError("Idle test never presented a frame")
+                            time.sleep(1)
+                            if idle_log.read_text().count("frame presented") != before:
+                                raise RuntimeError("Static window kept presenting frames")
+                            client.stdin.write(b"d")
+                            client.stdin.flush()
+                            drawn()
+                            for _ in range(100):
+                                if idle_log.read_text().count("frame presented") > before:
+                                    break
+                                time.sleep(.05)
+                            else:
+                                raise RuntimeError("Damage after idle did not wake presentation")
+                            client.communicate(input=b"q", timeout=5)
+                            if client.returncode != 0:
+                                raise RuntimeError("Idle test client failed")
+                        finally:
+                            if client is not None and client.poll() is None:
+                                client.kill(); client.wait()
+                            idle.terminate()
+                            try:
+                                code = idle.wait(timeout=5)
+                            except subprocess.TimeoutExpired:
+                                idle.kill(); idle.wait()
+                                raise RuntimeError("Idle server shutdown hung")
+                            if code != 0:
+                                raise RuntimeError(f"Idle server failed: {idle_log.read_text()}")
+                    print(f"Idle rootless={rootless_mode}: zero extra presents; damage woke rendering.")
+            failed = subprocess.run([binary, "serve", "--rootless", "--core", str(Path(temp) / "missing-core")], env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=5)
+            if failed.returncode == 0:
+                raise RuntimeError("Missing core did not fail")
             print("Native window rendering and requested XLibre lifecycle checks passed.")
         finally:
             server.terminate()

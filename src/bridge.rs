@@ -1,4 +1,4 @@
-//! C ABI v2. Callers own pointers and must keep buffers valid for each call.
+//! C ABI v3. Callers own pointers and must keep buffers valid for each call.
 //! The handle may be shared across threads; freeing it requires all calls to stop.
 use crate::backend::{Backend, InputEvent, Rect};
 use std::{
@@ -6,7 +6,7 @@ use std::{
     sync::{Arc, Mutex},
 };
 
-pub const ABI_VERSION: u32 = 2;
+pub const ABI_VERSION: u32 = 3;
 pub type SharedBackend = Arc<Mutex<Backend>>;
 pub struct Handle(pub SharedBackend);
 
@@ -48,7 +48,9 @@ pub unsafe extern "C" fn wayx_window_create(
 ) -> i32 {
     unsafe {
         access(handle, |b| {
-            b.create(id, parent, width, height).map_err(|_| ())
+            b.create(id, parent, width, height).map_err(|_| ())?;
+            b.output_pending = true;
+            Ok(())
         })
     }
 }
@@ -56,7 +58,13 @@ pub unsafe extern "C" fn wayx_window_create(
 /// `handle` must be null or a live WayX handle.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn wayx_window_destroy(handle: *mut Handle, id: u32) -> i32 {
-    unsafe { access(handle, |b| b.destroy(id).map_err(|_| ())) }
+    unsafe {
+        access(handle, |b| {
+            b.destroy(id).map_err(|_| ())?;
+            b.output_pending = true;
+            Ok(())
+        })
+    }
 }
 /// # Safety
 /// `handle` must be null or a live WayX handle.
@@ -67,7 +75,13 @@ pub unsafe extern "C" fn wayx_window_resize(
     width: u32,
     height: u32,
 ) -> i32 {
-    unsafe { access(handle, |b| b.resize(id, width, height).map_err(|_| ())) }
+    unsafe {
+        access(handle, |b| {
+            b.resize(id, width, height).map_err(|_| ())?;
+            b.output_pending = true;
+            Ok(())
+        })
+    }
 }
 /// # Safety
 /// `handle` must be live. `text` points to `len` readable UTF-8 bytes or is null when len=0.
@@ -81,7 +95,11 @@ pub unsafe extern "C" fn wayx_window_title(
     unsafe {
         access(handle, |b| {
             let text = read_text(text, len, 4096)?;
-            b.windows.get_mut(&id).ok_or(())?.title = text.to_owned();
+            let window = b.windows.get_mut(&id).ok_or(())?;
+            if window.title != text {
+                window.title = text.to_owned();
+                b.output_pending = true;
+            }
             Ok(())
         })
     }
@@ -92,7 +110,11 @@ pub unsafe extern "C" fn wayx_window_title(
 pub unsafe extern "C" fn wayx_window_map(handle: *mut Handle, id: u32, mapped: u32) -> i32 {
     unsafe {
         access(handle, |b| {
-            b.windows.get_mut(&id).ok_or(())?.mapped = mapped != 0;
+            let window = b.windows.get_mut(&id).ok_or(())?;
+            if window.mapped != (mapped != 0) {
+                window.mapped = mapped != 0;
+                b.output_pending = true;
+            }
             Ok(())
         })
     }
@@ -136,7 +158,11 @@ pub unsafe extern "C" fn wayx_frame_damage(
                     stride,
                     data,
                 )
-                .map_err(|_| ())
+                .map_err(|_| ())?;
+            if width != 0 && height != 0 {
+                b.output_pending = true;
+            }
+            Ok(())
         })
     }
 }
@@ -232,7 +258,11 @@ pub unsafe extern "C" fn wayx_window_state(
             if state.transient_for == id {
                 return Err(());
             }
-            backend.windows.get_mut(&id).ok_or(())?.state = *state;
+            let window = backend.windows.get_mut(&id).ok_or(())?;
+            if window.state != *state {
+                window.state = *state;
+                backend.output_pending = true;
+            }
             Ok(())
         })
     }
@@ -266,8 +296,45 @@ pub unsafe extern "C" fn wayx_window_constrain(
         })
     }
 }
+/// # Safety
+/// Handle must be live. The borrowed socket remains owned by the backend.
+unsafe extern "C" fn input_fd(handle: *mut Handle) -> i32 {
+    let mut fd = -1;
+    let result = unsafe {
+        access(handle, |b| {
+            if b.input_wake.is_none() {
+                b.input_wake = Some(crate::notify::InputWake::new().map_err(|_| ())?);
+            }
+            let wake = b.input_wake.as_mut().ok_or(())?;
+            fd = wake.descriptor().map_err(|_| ())?;
+            // Include input queued before the server registered its socket.
+            wake.signal().map_err(|_| ())
+        })
+    };
+    if result < 0 { result } else { fd }
+}
+/// # Safety
+/// Handle must be live; called on the server thread before draining input.
+unsafe extern "C" fn input_ack(handle: *mut Handle) -> i32 {
+    unsafe {
+        access(handle, |b| {
+            b.input_wake.as_mut().ok_or(())?.drain().map_err(|_| ())
+        })
+    }
+}
+/// # Safety
+/// Handle must be live; called after publishing a batch of output mutations.
+unsafe extern "C" fn output_flush(handle: *mut Handle) -> i32 {
+    unsafe {
+        access(handle, |b| {
+            b.flush_output();
+            b.rearm_input()
+        })
+    }
+}
 #[repr(C)]
 pub struct Api {
+    // Appended fields below require rebuilding the DDX for ABI v3.
     pub abi_version: u32,
     pub struct_size: u32,
     pub window_create: unsafe extern "C" fn(*mut Handle, u32, u32, u32, u32) -> i32,
@@ -283,8 +350,14 @@ pub struct Api {
     pub window_state:
         unsafe extern "C" fn(*mut Handle, u32, *const crate::window::WindowState) -> i32,
     pub window_constrain: unsafe extern "C" fn(*mut Handle, u32, *mut u32, *mut u32) -> i32,
+    pub input_fd: unsafe extern "C" fn(*mut Handle) -> i32,
+    pub input_ack: unsafe extern "C" fn(*mut Handle) -> i32,
+    pub output_flush: unsafe extern "C" fn(*mut Handle) -> i32,
 }
 pub static API: Api = Api {
+    input_fd,
+    input_ack,
+    output_flush,
     abi_version: ABI_VERSION,
     struct_size: std::mem::size_of::<Api>() as u32,
     window_create: wayx_window_create,
@@ -325,6 +398,40 @@ mod tests {
             assert_eq!(wayx_clipboard_get(h, out.as_mut_ptr(), 5, &mut needed), 0);
             assert_eq!(&out, b"hello");
             wayx_backend_free(h);
+        }
+    }
+}
+
+#[cfg(test)]
+mod batch_tests {
+    use super::*;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    #[test]
+    fn output_batch_notifies_once_and_ignores_unchanged_metadata() {
+        let count = Arc::new(AtomicUsize::new(0));
+        let observer = count.clone();
+        let mut backend = Backend::default();
+        backend.ui_wake = Some(Arc::new(move || {
+            observer.fetch_add(1, Ordering::SeqCst);
+        }));
+        let mut handle = Handle(Arc::new(Mutex::new(backend)));
+        unsafe {
+            assert_eq!(wayx_window_create(&mut handle, 1, 0, 2, 2), 0);
+            assert_eq!(wayx_window_title(&mut handle, 1, b"test".as_ptr(), 4), 0);
+            for _ in 0..20 {
+                assert_eq!(
+                    wayx_frame_damage(&mut handle, 1, 0, 0, 2, 2, 8, [0u8; 16].as_ptr(), 16),
+                    0
+                );
+            }
+            assert_eq!(count.load(Ordering::SeqCst), 0);
+            assert_eq!(output_flush(&mut handle), 0);
+            assert_eq!(count.load(Ordering::SeqCst), 1);
+            assert_eq!(wayx_window_title(&mut handle, 1, b"test".as_ptr(), 4), 0);
+            assert_eq!(wayx_window_map(&mut handle, 1, 0), 0);
+            assert_eq!(wayx_window_state(&mut handle, 1, &Default::default()), 0);
+            assert_eq!(output_flush(&mut handle), 0);
+            assert_eq!(count.load(Ordering::SeqCst), 1);
         }
     }
 }

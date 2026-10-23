@@ -10,10 +10,11 @@ crate-type = ["rlib", "staticlib"]
 
 [features]
 default = ["desktop", "ssh"]
-desktop = ["dep:winit", "dep:wgpu", "dep:pollster", "dep:arboard", "dep:x11rb", "dep:xim", "dep:cosmic-text"]
+desktop = ["dep:winit", "dep:wgpu", "dep:pollster", "dep:arboard", "dep:x11rb", "dep:xim", "dep:cosmic-text", "dep:polling"]
 ssh = ["dep:russh", "dep:tokio", "dep:rand", "dep:rpassword"]
 
 [dependencies]
+polling = { version = "3", optional = true }
 anyhow = "1"
 thiserror = "2"
 clap = { version = "4", features = ["derive"] }

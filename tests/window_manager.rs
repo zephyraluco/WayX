@@ -16,6 +16,7 @@ use x11rb::{
     protocol::{Event, xproto::*},
     wrapper::ConnectionExt as _,
 };
+#[track_caller]
 fn pump(wm: &mut SelectionBridge, mut ready: impl FnMut() -> Result<bool>) -> Result<()> {
     let deadline = Instant::now() + Duration::from_secs(5);
     while Instant::now() < deadline {
@@ -25,7 +26,10 @@ fn pump(wm: &mut SelectionBridge, mut ready: impl FnMut() -> Result<bool>) -> Re
         }
         std::thread::sleep(Duration::from_millis(5));
     }
-    anyhow::bail!("Window manager state did not converge")
+    anyhow::bail!(
+        "Window manager state did not converge at {}",
+        std::panic::Location::caller()
+    )
 }
 #[test]
 #[ignore = "requires built XLibre plugin; set WAYX_TEST_CORE"]

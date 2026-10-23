@@ -4036,6 +4036,7 @@ dependencies = [
  "clap",
  "cosmic-text",
  "libloading 0.8.9",
+ "polling",
  "pollster",
  "rand 0.10.3",
  "rand 0.8.8",

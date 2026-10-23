@@ -6,7 +6,10 @@ use crate::{
 use anyhow::{Context, Result, anyhow};
 use std::{
     collections::HashMap,
-    sync::Arc,
+    sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    },
     time::{Duration, Instant},
 };
 use winit::raw_window_handle::HasWindowHandle;
@@ -290,6 +293,8 @@ struct Native {
     ime_spot: (i16, i16),
     ime_context: Option<(u32, u16, u16)>,
     preedit: Option<crate::preedit::PreeditImage>,
+    retry_at: Option<Instant>,
+    occluded: bool,
 }
 impl Native {
     async fn new(
@@ -367,6 +372,8 @@ impl Native {
             ime_spot: (0, 0),
             ime_context: None,
             preedit: None,
+            retry_at: None,
+            occluded: false,
         })
     }
     fn apply_state(
@@ -565,6 +572,9 @@ fn resize_input(id: u32, state: &WindowState, width: u32, height: u32, flags: u3
 }
 struct App {
     backend: SharedBackend,
+    wake_pending: Arc<AtomicBool>,
+    ui_wake: crate::notify::UiWake,
+    selection_watch: Option<crate::selection::ReadinessWatch>,
     native: HashMap<WindowId, Native>,
     clipboard: Option<arboard::Clipboard>,
     preedit_painter: Option<crate::preedit::Painter>,
@@ -589,14 +599,20 @@ impl App {
     }
     fn finish_worker(&mut self, event_loop: &ActiveEventLoop) -> Result<bool> {
         if !self
-            .worker
-            .as_ref()
-            .is_some_and(std::thread::JoinHandle::is_finished)
+            .backend
+            .lock()
+            .map_err(|_| anyhow!("backend mutex poisoned"))?
+            .worker_exited
+            && !self
+                .worker
+                .as_ref()
+                .is_some_and(std::thread::JoinHandle::is_finished)
         {
             return Ok(false);
         }
         let Some(worker) = self.worker.take() else {
-            return Ok(false);
+            event_loop.exit();
+            return Ok(true);
         };
         let code = worker
             .join()
@@ -606,6 +622,24 @@ impl App {
         Ok(true)
     }
     fn sync(&mut self, event_loop: &ActiveEventLoop) -> Result<()> {
+        if let Err(error) = self.sync_inner(event_loop) {
+            // Any internal X11 operation can race normal server teardown, not just tick().
+            let deadline = Instant::now() + Duration::from_millis(100);
+            while self
+                .worker
+                .as_ref()
+                .is_some_and(|worker| !worker.is_finished())
+                && Instant::now() < deadline
+            {
+                std::thread::sleep(Duration::from_millis(1));
+            }
+            if self.worker.is_none() || !self.finish_worker(event_loop)? {
+                return Err(error);
+            }
+        }
+        Ok(())
+    }
+    fn sync_inner(&mut self, event_loop: &ActiveEventLoop) -> Result<()> {
         if self.finish_worker(event_loop)? {
             return Ok(());
         }
@@ -622,28 +656,11 @@ impl App {
             if self.rootless {
                 selection.enable_window_management()?;
             }
+            self.selection_watch = Some(selection.watch(self.ui_wake.clone())?);
             self.selection = Some(selection);
         }
-        if let Some(error) = self
-            .selection
-            .as_mut()
-            .and_then(|selection| selection.tick().err())
-        {
-            // XLibre closes internal X11 clients before dix_main returns. Confirm
-            // its exit status before treating that brief teardown EOF as failure.
-            let deadline = Instant::now() + Duration::from_millis(100);
-            while self
-                .worker
-                .as_ref()
-                .is_some_and(|worker| !worker.is_finished())
-                && Instant::now() < deadline
-            {
-                std::thread::sleep(Duration::from_millis(1));
-            }
-            if self.finish_worker(event_loop)? {
-                return Ok(());
-            }
-            return Err(error);
+        if let Some(selection) = &mut self.selection {
+            selection.tick()?;
         }
         let mut backend = self
             .backend
@@ -695,7 +712,16 @@ impl App {
                 native
                     .sync_transient(owners.get(&window.state.transient_for).copied().flatten())?;
             }
-            native.window.request_redraw();
+            if let Some(window) = backend.windows.get(&native.id)
+                && (native.image.revision != window.framebuffer.revision
+                    || native.image.width != window.framebuffer.width
+                    || native.image.height != window.framebuffer.height)
+                && !native.occluded
+                && !native.window.is_minimized().unwrap_or(false)
+                && native.retry_at.is_none()
+            {
+                native.window.request_redraw();
+            }
         }
         if let Some(id) = backend.requested_focus.take()
             && let Some(native) = self.native.values().find(|native| native.id == id)
@@ -744,6 +770,7 @@ impl App {
                     native.composing = false;
                     native.preedit = None;
                     native.image.revision = 0;
+                    native.window.request_redraw();
                 }
                 native.ime_context = context;
                 if allowed != native.ime_allowed {
@@ -752,10 +779,12 @@ impl App {
                     native.composing = false;
                     native.preedit = None;
                     native.image.revision = 0;
+                    native.window.request_redraw();
                 }
                 if let Some((x, y)) = cursor {
                     if native.ime_spot != (x, y) {
                         native.image.revision = 0;
+                        native.window.request_redraw();
                         native.ime_spot = (x, y);
                     }
                     let size = native.window.inner_size();
@@ -768,10 +797,30 @@ impl App {
                 }
             }
         }
+        for native in self.native.values() {
+            if native.image.revision == 0
+                && !native.occluded
+                && native.retry_at.is_none()
+                && !native.window.is_minimized().unwrap_or(false)
+            {
+                native.window.request_redraw();
+            }
+        }
+        if let Some(watch) = &self.selection_watch {
+            watch.arm()?;
+        }
         Ok(())
     }
 }
-impl ApplicationHandler for App {
+impl ApplicationHandler<()> for App {
+    fn user_event(&mut self, event_loop: &ActiveEventLoop, (): ()) {
+        // Clear before reading state so a concurrent producer can schedule a new wake.
+        self.wake_pending.store(false, Ordering::Release);
+        if let Err(error) = self.sync(event_loop) {
+            self.error = Some(error);
+            event_loop.exit();
+        }
+    }
     fn resumed(&mut self, event_loop: &ActiveEventLoop) {
         self.clipboard = match arboard::Clipboard::new() {
             Ok(c) => Some(c),
@@ -794,9 +843,18 @@ impl ApplicationHandler for App {
             self.error = Some(error);
             event_loop.exit();
         }
-        event_loop.set_control_flow(ControlFlow::WaitUntil(
-            Instant::now() + Duration::from_millis(16),
-        ));
+        let mut deadline = self.last_clipboard + Duration::from_millis(250);
+        for native in self.native.values_mut() {
+            if let Some(retry) = native.retry_at {
+                if retry <= Instant::now() {
+                    native.retry_at = None;
+                    native.window.request_redraw();
+                } else {
+                    deadline = deadline.min(retry);
+                }
+            }
+        }
+        event_loop.set_control_flow(ControlFlow::WaitUntil(deadline));
     }
     fn window_event(&mut self, event_loop: &ActiveEventLoop, window_id: WindowId, ev: WindowEvent) {
         let Some(native) = self.native.get_mut(&window_id) else {
@@ -816,6 +874,7 @@ impl ApplicationHandler for App {
             }
             WindowEvent::Resized(size) => {
                 native.resize_surface(size.width, size.height);
+                native.window.request_redraw();
                 let flags = (u32::from(native.window.is_maximized()) * window_state::MAXIMIZED)
                     | (u32::from(native.window.is_minimized().unwrap_or(false))
                         * window_state::MINIMIZED)
@@ -833,7 +892,17 @@ impl ApplicationHandler for App {
                 input.x = position.x as f64;
                 input.y = position.y as f64;
             }
+            WindowEvent::Occluded(occluded) => {
+                native.occluded = occluded;
+                if !occluded {
+                    native.window.request_redraw();
+                }
+                return;
+            }
             WindowEvent::RedrawRequested => {
+                if native.occluded || native.window.is_minimized().unwrap_or(false) {
+                    return;
+                }
                 let mut backend = self.backend.lock().unwrap();
                 if let Some(window) = backend.windows.get_mut(&id) {
                     match native.render(&window.framebuffer) {
@@ -842,6 +911,11 @@ impl ApplicationHandler for App {
                             event_loop.exit();
                         }
                         Ok(true) => {
+                            native.retry_at = None;
+                            tracing::debug!(window = id, "frame presented");
+                            if self.frame_limit.is_some() {
+                                native.window.request_redraw();
+                            }
                             self.presented_frames += 1;
                             if self
                                 .frame_limit
@@ -850,7 +924,13 @@ impl ApplicationHandler for App {
                                 event_loop.exit();
                             }
                         }
-                        Ok(false) => {}
+                        Ok(false) => {
+                            if native.window.inner_size().width != 0
+                                && native.window.inner_size().height != 0
+                            {
+                                native.retry_at = Some(Instant::now() + Duration::from_millis(100));
+                            }
+                        }
                     }
                     window.framebuffer.damage = None;
                 }
@@ -894,6 +974,7 @@ impl ApplicationHandler for App {
                     native.composing = false;
                     native.preedit = None;
                     native.image.revision = 0;
+                    native.window.request_redraw();
                     native.pressed_keys.clear();
                     if let Some(ime) = self
                         .selection
@@ -938,6 +1019,7 @@ impl ApplicationHandler for App {
                 native.composing = false;
                 native.preedit = None;
                 native.image.revision = 0;
+                native.window.request_redraw();
                 if let Some(ime) = self
                     .selection
                     .as_mut()
@@ -960,6 +1042,7 @@ impl ApplicationHandler for App {
                 };
                 native.preedit = None;
                 native.image.revision = 0;
+                native.window.request_redraw();
                 if let Some(ime) = self
                     .selection
                     .as_mut()
@@ -991,6 +1074,7 @@ impl ApplicationHandler for App {
                 native.composing = false;
                 native.preedit = None;
                 native.image.revision = 0;
+                native.window.request_redraw();
                 if let Some(ime) = self
                     .selection
                     .as_mut()
@@ -1129,7 +1213,23 @@ pub fn run(
     selection_config: Option<(u16, std::path::PathBuf)>,
     frame_limit: Option<u32>,
 ) -> Result<()> {
+    let event_loop = EventLoop::<()>::with_user_event().build()?;
+    let proxy = event_loop.create_proxy();
+    let wake_pending = Arc::new(AtomicBool::new(false));
+    let pending = wake_pending.clone();
+    let ui_wake: crate::notify::UiWake = Arc::new(move || {
+        if !pending.swap(true, Ordering::AcqRel) && proxy.send_event(()).is_err() {
+            pending.store(false, Ordering::Release);
+        }
+    });
+    backend
+        .lock()
+        .map_err(|_| anyhow!("backend mutex poisoned"))?
+        .ui_wake = Some(ui_wake.clone());
     let mut app = App {
+        wake_pending,
+        ui_wake,
+        selection_watch: None,
         backend,
         native: HashMap::new(),
         clipboard: None,
@@ -1145,8 +1245,9 @@ pub fn run(
         selection_config,
         worker,
     };
-    let event_result = EventLoop::new().and_then(|event_loop| event_loop.run_app(&mut app));
+    let event_result = event_loop.run_app(&mut app);
     // Close the internal selection client, then request orderly server teardown.
+    app.selection_watch.take();
     app.selection.take();
     if let Some(worker) = app.worker.take() {
         if !worker.is_finished() {

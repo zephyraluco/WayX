@@ -21,3 +21,5 @@ pub mod ime;
 
 #[cfg(feature = "desktop")]
 mod preedit;
+
+pub mod notify;

@@ -25,7 +25,8 @@ _X_EXPORT int wayx_xserver_run(const WayxApi*,WayxBackend*,int,char**);
 static const WayxApi *api;
 static WayxBackend *backend;
 static DamagePtr damage;
-static OsTimerPtr timer;
+static int input_socket=-1;
+static Bool handlers_registered;
 static ScreenPtr screen;
 extern DeviceIntPtr wayx_pointer, wayx_keyboard;
 extern int dix_main(int, char **, char **);
@@ -104,7 +105,7 @@ static void button(int which,int pressed) {
     buttons_down[which]=pressed;
     valuator_mask_free(&mask);
 }
-static CARD32 poll_backend(OsTimerPtr unused,CARD32 now,void *closure) {
+static void flush_backend(void) {
     if (rootless && screen->root) sync_rootless_windows();
     WayxInputEvent event;
     for (int count=0;count<4096 && api->input_poll(backend,&event)==1;count++) {
@@ -192,7 +193,21 @@ static CARD32 poll_backend(OsTimerPtr unused,CARD32 now,void *closure) {
         }
         DamageEmpty(damage);
     }
-    return 8;
+    if (api->output_flush(backend)<0) FatalError("WayX output notification failed\n");
+}
+static void backend_block(void *data,void *timeout) { flush_backend(); }
+static void backend_wakeup(void *data,int result) { }
+static void backend_input(int fd,int ready,void *data) {
+    if (api->input_ack(backend)<0) FatalError("WayX input notification failed\n");
+    flush_backend();
+}
+static void register_backend(void) {
+    input_socket=api->input_fd(backend);
+    if (input_socket<0 || !SetNotifyFd(input_socket,backend_input,X_NOTIFY_READ,NULL))
+        FatalError("WayX could not register input notification socket\n");
+    if (!RegisterBlockAndWakeupHandlers(backend_block,backend_wakeup,NULL))
+        FatalError("WayX could not register output batch handler\n");
+    handlers_registered=TRUE;
 }
 static void attach_screen(CallbackListPtr *list,void *closure,void *data) {
     screen=data;
@@ -212,7 +227,8 @@ static void attach_screen(CallbackListPtr *list,void *closure,void *data) {
         init_window_manager_atoms();
         if (compRedirectSubwindows(serverClient,screen->root,CompositeRedirectManual)!=Success)
             FatalError("WayX could not redirect top-level windows; Composite is required\n");
-        timer=TimerSet(NULL,0,8,poll_backend,NULL);
+        install_window_hooks();
+        register_backend();
         return;
     }
     api->window_map(backend,1,1);
@@ -220,7 +236,7 @@ static void attach_screen(CallbackListPtr *list,void *closure,void *data) {
     if (!damage) FatalError("WayX could not create Damage tracking\n");
     DamageRegister(&screen->GetScreenPixmap(screen)->drawable,damage);
     api->frame_damage(backend,1,0,0,screen->width,screen->height,fb->paddedBytesWidth,(const uint8_t*)fb->pfbMemory,(size_t)fb->paddedBytesWidth*screen->height);
-    timer=TimerSet(NULL,0,8,poll_backend,NULL);
+    register_backend();
 }
 #ifdef GLXEXT
 extern void wayx_glx_init(void);
@@ -248,7 +264,9 @@ void InitOutput(int argc,char **argv) {
     if (!AddCallback(&PostInitRootWindowCallback,attach_screen,NULL)) FatalError("WayX failed to register screen callback\n");
 }
 void ddxGiveUp(enum ExitCode error) {
-    if (timer) {TimerFree(timer);timer=NULL;}
+    if (input_socket>=0) {RemoveNotifyFd(input_socket);input_socket=-1;}
+    if (handlers_registered) {RemoveBlockAndWakeupHandlers(backend_block,backend_wakeup,NULL);handlers_registered=FALSE;}
+    if (rootless && screen) remove_window_hooks();
     damage=NULL;
     while (wayx_windows) {WayxWindow *entry=wayx_windows;wayx_windows=entry->next;remove_window(entry);}
     if (backend) api->window_destroy(backend,1);

@@ -64,6 +64,7 @@ static void close_window(WindowPtr window) {
     if(client && client!=serverClient) CloseDownClient(client);
 }
 static void native_window_state(WindowPtr window,uint32_t flags) {
+    metadata_dirty=TRUE;
     CARD32 atoms[6];unsigned int count=0;
     /* Preserve client states that this backend does not own. */
     PropertyPtr old=property(window,net_state,32);

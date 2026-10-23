@@ -143,6 +143,7 @@ fn main() -> Result<()> {
             };
             let shared = backend.clone();
             let worker = std::thread::spawn(move || -> Result<i32> {
+                let _completion = wayx::notify::WorkerExit(shared.clone());
                 // XLibre installs process-wide signal handlers that can outlive dix_main.
                 // Pin the trusted native plugin until process exit; argv and the handle
                 // still outlive every server callback on this worker.

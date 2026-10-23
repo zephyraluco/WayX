@@ -4,7 +4,7 @@
 flowchart TB
   A[Remote X11 Applications] <--> B[russh · SSH X11 Forwarding]
   B <--> C[XLibre Core · FB / Pixman]
-  C <--> D[Custom C DDX · ABI v2]
+  C <--> D[Custom C DDX · ABI v3]
   D <--> E[Rust Window / Framebuffer / Input State]
   E --> F[wgpu · Damage Texture Upload]
   E <--> G[winit · Native Windows and Events]
@@ -55,7 +55,7 @@ Mesa 18.0.5 已验证修复前同客户端报无匹配 FBConfig，修复后真�
 上游 procedure-dispatch 接口；provider 拒绝所有服务端间接上下文，ForceCurrent
 也拒绝对 direct-context tag 执行服务端 GL 请求。测试检查错误返回，避免无宿主
 GL dispatch 时意外执行绘图。此路径不提供服务端间接 GL、DRI2/DRI3 或宿主 GL GPU
-加速。帧缓冲和 C ABI 保持现有约束，新增 GLX provider 不改变 ABI v2。
+加速。帧缓冲和 C ABI 保持现有约束，新增 GLX provider 不改变 ABI v3。
 
 核心在所有平台禁用 MIT-SHM，避免 SSH/回环转发被误判为可访问宿主共享内存。
 回归包括无 MIT-SHM 的 TCP Mesa VBO 绘制、OpenGL 像素回读、OGRE 实际绘制，
@@ -66,7 +66,7 @@ GL dispatch 时意外执行绘图。此路径不提供服务端间接 GL、DRI2/
 
 Rust 内部 X11 连接同时驱动 Selection 与 WM_S0/SubstructureRedirect，避免两套事件消费者。处理 MapRequest、ConfigureRequest、常用 EWMH ClientMessage，维护客户端列表、堆叠顺序和活动窗口。DDX 将 ICCCM 尺寸约束、瞬态关系、坐标及窗口状态以固定 64 字节结构同步到 Rust；原生 MOVE/RESIZE/STATE 回到 C 的服务器线程执行。新建窗口保持隐藏，直到显式映射，避免未完成初始化的根桌面被呈现。
 
-原生关闭先发送 WM_DELETE_WINDOW；未声明协议时终止该 X11 客户端。鼠标点击提升并聚焦普通窗口，hover 不改变层级。override-redirect 保留弹出行为。Linux X11 宿主验证了双向几何与瞬态父窗口关系；Wayland 全局定位受协议限制，macOS/Wayland 的原生 owner 关系仍需专用实现及原生验证。ABI v2 拒绝旧版本插件，升级必须重建核心。
+原生关闭先发送 WM_DELETE_WINDOW；未声明协议时终止该 X11 客户端。鼠标点击提升并聚焦普通窗口，hover 不改变层级。override-redirect 保留弹出行为。Linux X11 宿主验证了双向几何与瞬态父窗口关系；Wayland 全局定位受协议限制，macOS/Wayland 的原生 owner 关系仍需专用实现及原生验证。ABI v3 拒绝旧版本插件，升级必须重建核心。
 
 ## 输入
 
@@ -115,3 +115,19 @@ SSH 会话和所有 X11 channel 使用 russh。只允许已记录的原始主机
 CI 配置并不等于已执行成功。完整跨平台发行需要分别解决 XLibre 的平台依赖、库打包、线程/信号行为和原生交互验证。提交 a496bce 的 Rust 三平台及 Linux 核心 CI（run 39709583984）与 Windows/macOS 原生核心 CI（run 39709583993）均已通过。Linux rootful/rootless 与窗口管理已运行验证；各平台正式发行验收仍未完成。
 
 Rootless 集成测试额外覆盖完全遮挡下绘制、边框坐标、子窗口合成、独立输入、客户端 resize、unmap/remap 和窗口生命周期。原生测试通过宿主 X11 查询两个实际独立窗口，并关闭其中一个，确认另一个保留。
+
+## 更新调度与线程唤醒
+
+XLibre 在线程自己的 BlockHandler 批量处理输入及累计 Damage，不再由固定 8 ms 定时器扫描。
+窗口生命周期钩子和属性写入回调标记元数据；只在标记后读取标题/窗口属性。
+C Bridge 仅对实际输出变化设置 pending，由 output_flush 合并通知 UI；空批次不通知。
+
+ABI v3 追加 input_fd、input_ack、output_flush。input_fd 返回 Backend 拥有的回环
+socket，DDX 仅注册/注销，不关闭；生产者在队列入队后写入唤醒字节，消费者先确认
+通知再处理有界输入批次，未处理完的输入重新触发通知。队列和通知状态由同一锁保护。
+
+UI 使用 EventLoopProxy 的合并事件，消费前清除 pending，避免发布/清除顺序导致丢唤醒。
+内部 X11 连接由一次性 readiness watcher 唤醒，watcher 不读取协议数据；UI 消费事件后
+重新注册 readiness。销毁时先停止 watcher 并注销，再释放连接。工作线程完成（含失败）
+同样通知 UI。仅保留原生剪贴板兼容检查的 250 ms 截止时间与暂时性 surface 失败的
+按需重试截止时间；正常静止窗口不提交画面。系统曝光/恢复、尺寸及 IME 变化仍能重绘。
