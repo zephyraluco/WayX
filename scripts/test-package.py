@@ -10,6 +10,11 @@ import sys
 sys.dont_write_bytecode = True
 from package_support import verify, digest
 
+# Windows CI redirects these streams and otherwise uses a legacy code page.
+# Test logs contain Unicode; replay them without changing or hiding failures.
+sys.stdout.reconfigure(encoding="utf-8")
+sys.stderr.reconfigure(encoding="utf-8")
+
 parser = argparse.ArgumentParser(description=__doc__)
 parser.add_argument("--runtime", type=Path, required=True)
 parser.add_argument("--test-kit", type=Path, required=True)
@@ -30,6 +35,7 @@ if (manifest["abi"], manifest["target"]) != (tests["abi"], tests["target"]):
 os.chdir(kit)
 env = os.environ.copy()
 env["PYTHONDONTWRITEBYTECODE"] = "1"
+env["PYTHONIOENCODING"] = "utf-8"
 for key in ("WAYX_XKB_DIR", "WAYX_XKB_BIN_DIR", "CARGO_TARGET_DIR", "PKG_CONFIG_PATH",
             "LIBRARY_PATH", "C_INCLUDE_PATH", "CPLUS_INCLUDE_PATH", "DYLD_LIBRARY_PATH", "LD_LIBRARY_PATH"):
     env.pop(key, None)

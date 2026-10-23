@@ -4,12 +4,59 @@ import json
 import os
 from pathlib import Path
 import platform
+import subprocess
 import sys
 import tempfile
 import unittest
 from unittest.mock import patch
 from package_support import archive, digest, verify
 from test_fixtures import prebuilt
+
+
+class RunnerEncodingTests(unittest.TestCase):
+    def check_runner(self, failure):
+        # Exercise the actual runner with redirected CP1252 streams, as on Windows.
+        runner = Path(__file__).with_name("test-package.py").resolve()
+        harness = '''
+import os, runpy, subprocess, sys
+from unittest.mock import patch
+runner, directory, failure = sys.argv[1:]
+sys.path.insert(0, os.path.dirname(runner))
+manifest = dict(abi=5, target="fixture", core="core", client="client", launcher="launcher")
+tests = dict(manifest, runtime_manifest_sha256="fixture", units=[],
+             executables={name:name for name in ("xlibre", "rootless", "window_manager", "desktop_layout")})
+def run(command, **kwargs):
+    assert kwargs["env"]["PYTHONIOENCODING"] == "utf-8"
+    os.write(kwargs["stdout"].fileno(), "2\\u21923\\u21921 outputs; \\u4e2d\\u6587\\n".encode("utf-8"))
+    if failure == "yes":
+        raise subprocess.CalledProcessError(7, command)
+sys.argv = [runner, "--runtime", directory, "--test-kit", directory,
+            "--expected-sha", "a"*40, "--logs", directory]
+with patch("package_support.verify", side_effect=[manifest, tests]), \
+     patch("package_support.digest", return_value="fixture"), \
+     patch("subprocess.run", side_effect=run), patch("sys.platform", "win32"):
+    try:
+        runpy.run_path(runner, run_name="__main__")
+    except subprocess.CalledProcessError as error:
+        sys.exit(error.returncode)
+'''
+        with tempfile.TemporaryDirectory() as directory:
+            result = subprocess.run(
+                [sys.executable, "-c", harness, str(runner), directory, "yes" if failure else "no"],
+                env={**os.environ, "PYTHONIOENCODING":"cp1252", "PYTHONUTF8":"0"},
+                stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+            )
+            self.assertEqual(result.returncode, 7 if failure else 0, result.stderr.decode("utf-8", errors="replace"))
+            self.assertIn("2→3→1 outputs; 中文".encode(), result.stdout)
+            self.assertEqual((Path(directory)/"package-support.log").read_text(encoding="utf-8"),
+                             "2→3→1 outputs; 中文\n")
+            self.assertNotIn(b"UnicodeEncodeError", result.stderr)
+
+    def test_unicode_log_replay_with_legacy_console(self):
+        self.check_runner(failure=False)
+
+    def test_unicode_log_replay_preserves_failed_command(self):
+        self.check_runner(failure=True)
 
 
 class PackageTests(unittest.TestCase):
