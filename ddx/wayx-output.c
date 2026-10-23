@@ -12,6 +12,8 @@
 #undef ddxProcessArgument
 #include "wayx.h"
 #include "dix/input_priv.h"
+#include "dix/resource_priv.h"
+#include "dix/window_priv.h"
 #include "windowstr.h"
 #include "damage.h"
 #include "regionstr.h"
@@ -106,6 +108,23 @@ static void button(int which,int pressed) {
     buttons_down[which]=pressed;
     valuator_mask_free(&mask);
 }
+/* Native geometry is a window-manager action. serverClient would redirect it
+ * back into the asynchronous WM connection and report Success before applying
+ * it. Use the redirect owner's context so the final observation is synchronous.
+ * Remote X11 requests still take their ordinary ConfigureRequest policy path. */
+static int configure_native_window(WindowPtr window,Mask mask,XID *values) {
+    ClientPtr manager=serverClient;
+    WindowPtr parent=window->parent;
+    if (parent) {
+        if (parent->eventMask & SubstructureRedirectMask) manager=dixClientForWindow(parent);
+        else for (OtherClientsPtr other=wOtherClients(parent);other;other=other->next)
+            if (other->mask & SubstructureRedirectMask) {manager=dixClientForOtherClients(other);break;}
+    }
+    return ConfigureWindow(window,mask,values,manager);
+}
+static uint32_t root_resize_ack;
+static Bool root_geometry_pending=TRUE;
+static unsigned int root_width,root_height;
 static void flush_backend(void) {
     WayxInputEvent event;
     for (int count=0;count<4096 && api->input_poll(backend,&event)==1;count++) {
@@ -160,7 +179,7 @@ static void flush_backend(void) {
                     /* Geometry acknowledgement must follow this input in the same batch,
                      * including requests constrained back to the existing size. */
                     metadata_dirty=TRUE;
-                    XID values[]={width,height};ConfigureWindow(target,CWWidth|CWHeight,values,serverClient);
+                    XID values[]={width,height};configure_native_window(target,CWWidth|CWHeight,values);
                     native_window_state(target,event.flags);
                 }
             }
@@ -171,7 +190,7 @@ static void flush_backend(void) {
                 /* Even an unchanged/rejected request needs a final geometry ack. */
                 metadata_dirty=TRUE;
                 if (target->drawable.x-target->borderWidth!=x || target->drawable.y-target->borderWidth!=y) {
-                    XID values[]={x,y};ConfigureWindow(target,CWX|CWY,values,serverClient);
+                    XID values[]={x,y};configure_native_window(target,CWX|CWY,values);
                 }
             }
             break;
@@ -181,8 +200,27 @@ static void flush_backend(void) {
          * by the selection/XIM layer, not synthesized into raw X keycodes. */
         default:break;
         }
+        /* Completion is recorded only after the request has been processed.
+         * It is paired with a fresh final geometry at the end of this batch. */
+        if (event.detail && (event.kind==WAYX_MOVE || event.kind==WAYX_RESIZE)) {
+            WayxWindow *tracked=target?find_window(target->drawable.id):NULL;
+            if (tracked) {
+                if (event.kind==WAYX_MOVE) tracked->move_ack=event.detail;
+                else tracked->resize_ack=event.detail;
+                tracked->geometry_pending=TRUE;
+            } else if (!rootless && event.window==1 && event.kind==WAYX_RESIZE) {
+                root_resize_ack=event.detail;root_geometry_pending=TRUE;
+            }
+        }
     }
     if (rootless && screen->root) sync_rootless_windows();
+    if (!rootless && (root_geometry_pending || root_width!=screen->width || root_height!=screen->height)) {
+        WayxGeometrySnapshot geometry={0};
+        geometry.width=screen->width;geometry.height=screen->height;
+        geometry.resize_ack=root_resize_ack;
+        if (api->window_geometry(backend,1,&geometry)<0) FatalError("WayX root geometry rejected\n");
+        root_width=screen->width;root_height=screen->height;root_geometry_pending=FALSE;
+    }
     if (!rootless && damage && !RegionNil(DamageRegion(damage))) {
         RegionPtr region=DamageRegion(damage);
         BoxPtr boxes=RegionRects(region);
@@ -221,6 +259,7 @@ static void register_backend(void) {
 }
 static void attach_screen(CallbackListPtr *list,void *closure,void *data) {
     screen=data;
+    root_resize_ack=0;root_geometry_pending=TRUE;root_width=0;root_height=0;
     vfbScreenInfoPtr fb=vfbGetScreenPriv(screen);
     if (screen->myNum!=0 || fb->bitsPerPixel!=32 || fb->depth!=24)
         FatalError("WayX currently requires one depth-24, 32-bpp screen\n");

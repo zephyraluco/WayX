@@ -1,4 +1,4 @@
-//! C ABI v3. Callers own pointers and must keep buffers valid for each call.
+//! C ABI v4. Callers own pointers and must keep buffers valid for each call.
 //! The handle may be shared across threads; freeing it requires all calls to stop.
 use crate::backend::{Backend, InputEvent, Rect};
 use std::{
@@ -6,7 +6,7 @@ use std::{
     sync::{Arc, Mutex},
 };
 
-pub const ABI_VERSION: u32 = 3;
+pub const ABI_VERSION: u32 = 4;
 pub type SharedBackend = Arc<Mutex<Backend>>;
 pub struct Handle(pub SharedBackend);
 
@@ -110,11 +110,10 @@ pub unsafe extern "C" fn wayx_window_title(
 pub unsafe extern "C" fn wayx_window_map(handle: *mut Handle, id: u32, mapped: u32) -> i32 {
     unsafe {
         access(handle, |b| {
-            let window = b.windows.get_mut(&id).ok_or(())?;
-            if window.mapped != (mapped != 0) {
-                window.mapped = mapped != 0;
-                b.output_pending = true;
+            if !b.windows.contains_key(&id) {
+                return Err(());
             }
+            b.pending_maps.insert(id, mapped != 0);
             Ok(())
         })
     }
@@ -178,12 +177,6 @@ pub unsafe extern "C" fn wayx_input_poll(handle: *mut Handle, out: *mut InputEve
                 return Err(());
             }
             if let Some(event) = b.poll_input() {
-                if event.kind == crate::backend::event::RESIZE && event.detail != 0 {
-                    b.resize_acks.insert(event.window, event.detail);
-                }
-                if event.kind == crate::backend::event::MOVE && event.detail != 0 {
-                    b.move_acks.insert(event.window, event.detail);
-                }
                 out.write(event);
                 found = true;
             }
@@ -264,11 +257,39 @@ pub unsafe extern "C" fn wayx_window_state(
             if state.transient_for == id {
                 return Err(());
             }
-            let window = backend.windows.get_mut(&id).ok_or(())?;
-            if window.state != *state {
-                window.state = *state;
-                backend.output_pending = true;
+            let window = backend.windows.get(&id).ok_or(())?;
+            let mut geometry = backend
+                .pending_geometry
+                .get(&id)
+                .copied()
+                .unwrap_or(window.geometry);
+            geometry.state = *state;
+            backend.pending_geometry.insert(id, geometry);
+            Ok(())
+        })
+    }
+}
+/// # Safety
+/// Handle is live; geometry points to one complete post-processing observation.
+unsafe extern "C" fn window_geometry(
+    handle: *mut Handle,
+    id: u32,
+    geometry: *const crate::window::GeometrySnapshot,
+) -> i32 {
+    unsafe {
+        access(handle, |backend| {
+            let geometry = *geometry.as_ref().ok_or(())?;
+            geometry.state.validate().map_err(|_| ())?;
+            if !backend.windows.contains_key(&id)
+                || geometry.state.transient_for == id
+                || geometry.width == 0
+                || geometry.height == 0
+                || geometry.width > crate::backend::MAX_DIMENSION
+                || geometry.height > crate::backend::MAX_DIMENSION
+            {
+                return Err(());
             }
+            backend.pending_geometry.insert(id, geometry);
             Ok(())
         })
     }
@@ -290,12 +311,13 @@ pub unsafe extern "C" fn wayx_window_constrain(
             let (Some(width), Some(height)) = (width.as_mut(), height.as_mut()) else {
                 return Err(());
             };
-            let size = backend
-                .windows
+            let window = backend.windows.get(&id).ok_or(())?;
+            // DDX constraints can use staged hints; UI geometry remains committed.
+            let geometry = backend
+                .pending_geometry
                 .get(&id)
-                .ok_or(())?
-                .state
-                .constrain(*width, *height);
+                .unwrap_or(&window.geometry);
+            let size = geometry.state.constrain(*width, *height);
             *width = size.0;
             *height = size.1;
             Ok(())
@@ -340,7 +362,7 @@ unsafe extern "C" fn output_flush(handle: *mut Handle) -> i32 {
 }
 #[repr(C)]
 pub struct Api {
-    // Appended fields below require rebuilding the DDX for ABI v3.
+    // Appended fields below require rebuilding the DDX for ABI v4.
     pub abi_version: u32,
     pub struct_size: u32,
     pub window_create: unsafe extern "C" fn(*mut Handle, u32, u32, u32, u32) -> i32,
@@ -359,8 +381,11 @@ pub struct Api {
     pub input_fd: unsafe extern "C" fn(*mut Handle) -> i32,
     pub input_ack: unsafe extern "C" fn(*mut Handle) -> i32,
     pub output_flush: unsafe extern "C" fn(*mut Handle) -> i32,
+    pub window_geometry:
+        unsafe extern "C" fn(*mut Handle, u32, *const crate::window::GeometrySnapshot) -> i32,
 }
 pub static API: Api = Api {
+    window_geometry,
     input_fd,
     input_ack,
     output_flush,
@@ -443,40 +468,117 @@ mod batch_tests {
 }
 
 #[cfg(test)]
-mod resize_ack_tests {
+mod geometry_batch_tests {
     use super::*;
-    #[test]
-    fn resize_is_acknowledged_only_after_the_output_batch() {
+    use crate::window::{GeometrySnapshot, WindowState};
+    fn handle() -> Handle {
         let mut backend = Backend::default();
         backend.create(1, 0, 400, 287).unwrap();
-        backend
+        Handle(Arc::new(Mutex::new(backend)))
+    }
+    fn published(handle: &Handle) -> (GeometrySnapshot, u64) {
+        let backend = handle.0.lock().unwrap();
+        let window = &backend.windows[&1];
+        (window.geometry, window.geometry_generation)
+    }
+    fn snapshot(sequence: u32, x: i32) -> GeometrySnapshot {
+        GeometrySnapshot {
+            state: WindowState {
+                x,
+                flags: crate::window::ROOTLESS,
+                ..Default::default()
+            },
+            width: 400,
+            height: 287,
+            move_ack: sequence,
+            resize_ack: 17,
+        }
+    }
+    #[test]
+    fn poll_and_damage_cannot_acknowledge_unprocessed_geometry() {
+        let mut handle = handle();
+        let old = published(&handle);
+        handle
+            .0
+            .lock()
+            .unwrap()
             .push_input(InputEvent {
-                kind: crate::backend::event::RESIZE,
+                kind: crate::backend::event::MOVE,
                 window: 1,
-                detail: 17,
-                x: 640.,
-                y: 480.,
+                detail: 11,
+                x: 237.,
                 ..Default::default()
             })
             .unwrap();
-        let mut handle = Handle(Arc::new(Mutex::new(backend)));
         let mut event = InputEvent::default();
         unsafe {
             assert_eq!(wayx_input_poll(&mut handle, &mut event), 1);
+            assert_eq!(
+                wayx_frame_damage(&mut handle, 1, 0, 0, 1, 1, 4, [0u8; 4].as_ptr(), 4),
+                0
+            );
+            assert_eq!(output_flush(&mut handle), 0);
         }
-        assert_eq!(handle.0.lock().unwrap().windows[&1].resize_ack, 0);
-        // A server can constrain/reject the request without changing any pixels.
+        assert_eq!(published(&handle), old);
+    }
+    #[test]
+    fn ui_sees_whole_old_or_new_snapshot_across_interleaved_batches() {
+        let mut handle = handle();
+        let old = published(&handle);
+        let first = snapshot(10, 236);
+        unsafe {
+            assert_eq!(window_geometry(&mut handle, 1, &first), 0);
+        }
+        assert_eq!(published(&handle), old);
+        // A later completion replaces the entire observation, never just its ack.
+        let latest = snapshot(11, 237);
+        unsafe {
+            assert_eq!(window_geometry(&mut handle, 1, &latest), 0);
+        }
+        assert_eq!(published(&handle), old);
         unsafe {
             assert_eq!(output_flush(&mut handle), 0);
         }
+        assert_eq!(published(&handle), (latest, 1));
+        let next = snapshot(12, 238);
+        unsafe {
+            assert_eq!(window_geometry(&mut handle, 1, &next), 0);
+        }
+        assert_eq!(published(&handle), (latest, 1));
+        unsafe {
+            assert_eq!(output_flush(&mut handle), 0);
+        }
+        assert_eq!(published(&handle), (next, 2));
+        unsafe {
+            assert_eq!(window_geometry(&mut handle, 1, &next), 0);
+            assert_eq!(output_flush(&mut handle), 0);
+        }
+        assert_eq!(published(&handle), (next, 2));
+    }
+    #[test]
+    fn rejected_resize_and_unchanged_move_have_explicit_final_snapshots() {
+        let mut handle = handle();
+        let final_geometry = snapshot(11, 236); // Server kept its old position/size.
+        unsafe {
+            assert_eq!(window_geometry(&mut handle, 1, &final_geometry), 0);
+            assert_eq!(output_flush(&mut handle), 0);
+        }
+        assert_eq!(published(&handle).0, final_geometry);
+        assert_eq!(published(&handle).0.resize_ack, 17);
+    }
+    #[test]
+    fn destroy_discards_pending_geometry_and_mapping() {
+        let mut handle = handle();
+        unsafe {
+            assert_eq!(window_geometry(&mut handle, 1, &snapshot(11, 237)), 0);
+            assert_eq!(wayx_window_map(&mut handle, 1, 1), 0);
+            assert!(!handle.0.lock().unwrap().windows[&1].mapped);
+            assert_eq!(wayx_window_destroy(&mut handle, 1), 0);
+            assert_eq!(output_flush(&mut handle), 0);
+        }
         let backend = handle.0.lock().unwrap();
-        assert_eq!(backend.windows[&1].resize_ack, 17);
-        assert_eq!(
-            (
-                backend.windows[&1].framebuffer.width,
-                backend.windows[&1].framebuffer.height
-            ),
-            (400, 287)
-        );
+        assert!(backend.windows.is_empty());
+        assert!(backend.pending_geometry.is_empty());
+        assert!(backend.pending_maps.is_empty());
     }
 }

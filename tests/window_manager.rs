@@ -215,9 +215,17 @@ fn window_management_should_route_requests_hints_states_and_cooperative_close() 
                 .iter()
                 .all(|id| state.windows.get(id).is_some_and(|w| w.mapped)))
         })?;
-        ensure!(backend.lock().unwrap().windows[&b].state.transient_for == a);
         ensure!(
-            backend.lock().unwrap().windows[&popup].state.flags & window::OVERRIDE_REDIRECT != 0
+            backend.lock().unwrap().windows[&b]
+                .geometry
+                .state
+                .transient_for
+                == a
+        );
+        ensure!(
+            backend.lock().unwrap().windows[&popup].geometry.state.flags
+                & window::OVERRIDE_REDIRECT
+                != 0
         );
         let list = atom("_NET_CLIENT_LIST")?;
         pump(&mut wm, || {
@@ -237,8 +245,8 @@ fn window_management_should_route_requests_hints_states_and_cooperative_close() 
         pump(&mut wm, || {
             let state = backend.lock().unwrap();
             let w = &state.windows[&a];
-            Ok(w.state.x == 55
-                && w.state.y == 65
+            Ok(w.geometry.state.x == 55
+                && w.geometry.state.y == 65
                 && w.framebuffer.width == 96
                 && w.framebuffer.height == 80)
         })?;
@@ -269,8 +277,8 @@ fn window_management_should_route_requests_hints_states_and_cooperative_close() 
         pump(&mut wm, || {
             let backend = backend.lock().unwrap();
             let window = &backend.windows[&a];
-            Ok(window.resize_ack == 17
-                && window.move_ack == 23
+            Ok(window.geometry.resize_ack == 17
+                && window.geometry.move_ack == 23
                 && (window.framebuffer.width, window.framebuffer.height) == (128, 110))
         })?;
         // An unchanged move still acknowledges its sequence, with no geometry echo.
@@ -285,8 +293,32 @@ fn window_management_should_route_requests_hints_states_and_cooperative_close() 
         pump(&mut wm, || {
             let backend = backend.lock().unwrap();
             let window = &backend.windows[&a];
-            Ok(window.move_ack == 24 && (window.state.x, window.state.y) == (70, 90))
+            Ok(window.geometry.move_ack == 24
+                && (window.geometry.state.x, window.geometry.state.y) == (70, 90))
         })?;
+        // Do not tick the WM: native input must be applied before it is acked,
+        // rather than merely redirecting a ConfigureRequest to the WM socket.
+        backend.lock().unwrap().push_input(InputEvent {
+            kind: event::MOVE,
+            window: a,
+            detail: 1000,
+            x: 71.,
+            y: 91.,
+            ..Default::default()
+        })?;
+        let deadline = Instant::now() + Duration::from_secs(2);
+        loop {
+            let geometry = backend.lock().unwrap().windows[&a].geometry;
+            if geometry.move_ack == 1000 {
+                ensure!(
+                    (geometry.state.x, geometry.state.y) == (71, 91),
+                    "Native move acknowledged before actual application"
+                );
+                break;
+            }
+            ensure!(Instant::now() < deadline, "Native move depends on WM tick");
+            std::thread::sleep(Duration::from_millis(1));
+        }
         conn.change_window_attributes(
             a,
             &ChangeWindowAttributesAux::new().event_mask(EventMask::STRUCTURE_NOTIFY),
@@ -295,12 +327,12 @@ fn window_management_should_route_requests_hints_states_and_cooperative_close() 
         while conn.poll_for_event()?.is_some() {}
         {
             let mut backend = backend.lock().unwrap();
-            for sequence in 25..=424 {
+            for sequence in 1001..=1400 {
                 backend.push_input(InputEvent {
                     kind: event::MOVE,
                     window: a,
                     detail: sequence,
-                    x: f64::from(sequence + 46),
+                    x: f64::from(sequence - 930),
                     y: 90.,
                     ..Default::default()
                 })?;
@@ -309,7 +341,8 @@ fn window_management_should_route_requests_hints_states_and_cooperative_close() 
         pump(&mut wm, || {
             let backend = backend.lock().unwrap();
             let window = &backend.windows[&a];
-            Ok(window.move_ack == 424 && (window.state.x, window.state.y) == (470, 90))
+            Ok(window.geometry.move_ack == 1400
+                && (window.geometry.state.x, window.geometry.state.y) == (470, 90))
         })?;
         let geometry = conn.get_geometry(a)?.reply()?;
         anyhow::ensure!(
@@ -339,7 +372,7 @@ fn window_management_should_route_requests_hints_states_and_cooperative_close() 
         pump(&mut wm, || {
             let backend = backend.lock().unwrap();
             let window = &backend.windows[&a];
-            Ok((window.state.x, window.state.y) == (-120, 80))
+            Ok((window.geometry.state.x, window.geometry.state.y) == (-120, 80))
         })?;
         // Pure width/height changes must synchronize even when the client paints nothing.
         for (width, height) in [(160u32, 120u32), (128, 110)] {
@@ -362,7 +395,7 @@ fn window_management_should_route_requests_hints_states_and_cooperative_close() 
         )?;
         conn.flush()?;
         pump(&mut wm, || {
-            Ok(backend.lock().unwrap().windows[&a].state.flags
+            Ok(backend.lock().unwrap().windows[&a].geometry.state.flags
                 & (window::ABOVE | window::FULLSCREEN)
                 == window::ABOVE | window::FULLSCREEN)
         })?;
@@ -373,7 +406,7 @@ fn window_management_should_route_requests_hints_states_and_cooperative_close() 
             ..Default::default()
         })?;
         pump(&mut wm, || {
-            let flags = backend.lock().unwrap().windows[&a].state.flags;
+            let flags = backend.lock().unwrap().windows[&a].geometry.state.flags;
             Ok(flags & window::MAXIMIZED != 0
                 && flags & window::FULLSCREEN == 0
                 && flags & window::ABOVE != 0)
@@ -385,7 +418,7 @@ fn window_management_should_route_requests_hints_states_and_cooperative_close() 
             ..Default::default()
         })?;
         pump(&mut wm, || {
-            Ok(backend.lock().unwrap().windows[&a].state.flags & window::MINIMIZED != 0)
+            Ok(backend.lock().unwrap().windows[&a].geometry.state.flags & window::MINIMIZED != 0)
         })?;
         let geometry = conn.get_geometry(a)?.reply()?;
         ensure!(
@@ -406,7 +439,7 @@ fn window_management_should_route_requests_hints_states_and_cooperative_close() 
             ..Default::default()
         })?;
         pump(&mut wm, || {
-            Ok(backend.lock().unwrap().windows[&a].state.flags & window::MINIMIZED == 0)
+            Ok(backend.lock().unwrap().windows[&a].geometry.state.flags & window::MINIMIZED == 0)
         })?;
         let active = atom("_NET_ACTIVE_WINDOW")?;
         conn.send_event(

@@ -11,7 +11,7 @@ static PropertyPtr property(WindowPtr window,Atom atom,int format) {
     return value;
 }
 static uint32_t hint_dimension(CARD32 value) {return value>16384?16384:value;}
-static void sync_window_state(WindowPtr window) {
+static void sync_window_state(WindowPtr window,WayxWindow *tracked) {
     WayxWindowState state={0};
     state.x=window->drawable.x-window->borderWidth;
     state.y=window->drawable.y-window->borderWidth;
@@ -42,11 +42,17 @@ static void sync_window_state(WindowPtr window) {
         if(atom==net_max_vert) max_v=TRUE;
     }
     if(max_h&&max_v) state.flags|=WAYX_MAXIMIZED;
-    if(api->window_state(backend,window->drawable.id,&state)<0) {
+    WayxGeometrySnapshot geometry={0};
+    geometry.state=state;
+    geometry.width=window->drawable.width;geometry.height=window->drawable.height;
+    geometry.move_ack=tracked->move_ack;geometry.resize_ack=tracked->resize_ack;
+    if(api->window_geometry(backend,window->drawable.id,&geometry)<0) {
         /* Malformed client hints must not terminate the display server. */
         WayxWindowState fallback={0};fallback.x=state.x;fallback.y=state.y;
         fallback.flags=state.flags;fallback.transient_for=state.transient_for==window->drawable.id?0:state.transient_for;
-        api->window_state(backend,window->drawable.id,&fallback);
+        geometry.state=fallback;
+        if(api->window_geometry(backend,window->drawable.id,&geometry)<0)
+            FatalError("WayX geometry snapshot rejected\n");
     }
 }
 static void close_window(WindowPtr window) {

@@ -2,6 +2,10 @@
 use anyhow::{Context, Result, ensure};
 use std::{
     io::{BufRead, Write},
+    sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    },
     time::{Duration, Instant},
 };
 use x11rb::{
@@ -187,6 +191,7 @@ fn native_geometry_client() -> Result<()> {
         b"MIT-MAGIC-COOKIE-1".to_vec(),
         cookie.to_vec(),
     )?;
+    let conn = Arc::new(conn);
     let root = conn.setup().roots[0].root;
     let window = conn.generate_id()?;
     conn.create_window(
@@ -214,6 +219,8 @@ fn native_geometry_client() -> Result<()> {
     conn.flush()?;
     println!("GEOMETRY READY");
     std::io::stdout().flush()?;
+    let painting = Arc::new(AtomicBool::new(false));
+    let mut painter = None;
     for line in std::io::stdin().lock().lines() {
         let line = line?;
         let args: Vec<_> = line.split_whitespace().collect();
@@ -250,19 +257,20 @@ fn native_geometry_client() -> Result<()> {
                 stable_position(&conn, window, x, y, 1000)?;
             }
             #[cfg(unix)]
-            ["local-position", x, y] => {
+            [kind @ ("local-position" | "drag-position"), x, y] => {
                 let (x, y): (i16, i16) = (x.parse()?, y.parse()?);
                 let (host, _, native) = host_window()?;
-                for offset in 0..400 {
+                let steps = if *kind == "drag-position" { 300 } else { 400 };
+                let geometry = host.get_geometry(native)?.reply()?;
+                for offset in 0..steps {
                     host.configure_window(
                         native,
                         &ConfigureWindowAux::new()
-                            .x(i32::from(x) - 399 + offset)
+                            .x(i32::from(x) - (steps - 1) + offset)
                             .y(i32::from(y)),
                     )?;
                     // No WM runs under Xvfb. Supply the ICCCM root-coordinate
                     // notification that a real WM sends after moving its client.
-                    let geometry = host.get_geometry(native)?.reply()?;
                     host.send_event(
                         false,
                         native,
@@ -273,7 +281,7 @@ fn native_geometry_client() -> Result<()> {
                             event: native,
                             window: native,
                             above_sibling: 0,
-                            x: x - 399 + offset as i16,
+                            x: x - (steps - 1) as i16 + offset as i16,
                             y,
                             width: geometry.width,
                             height: geometry.height,
@@ -281,9 +289,50 @@ fn native_geometry_client() -> Result<()> {
                             override_redirect: false,
                         },
                     )?;
+                    if *kind == "drag-position" {
+                        host.flush()?;
+                        std::thread::sleep(Duration::from_millis(3));
+                    }
                 }
                 host.flush()?;
                 stable_position(&conn, window, x, y, 1000)?;
+            }
+            ["paint", "on"] => {
+                ensure!(painter.is_none(), "Painter already running");
+                painting.store(true, Ordering::Release);
+                let conn = conn.clone();
+                let active = painting.clone();
+                painter = Some(std::thread::spawn(move || -> Result<()> {
+                    let gc = conn.generate_id()?;
+                    conn.create_gc(gc, window, &CreateGCAux::new())?.check()?;
+                    let mut color = 0;
+                    while active.load(Ordering::Acquire) {
+                        color ^= 0x00ff00;
+                        conn.change_gc(gc, &ChangeGCAux::new().foreground(color))?;
+                        conn.poly_fill_rectangle(
+                            window,
+                            gc,
+                            &[Rectangle {
+                                x: 0,
+                                y: 0,
+                                width: 400,
+                                height: 287,
+                            }],
+                        )?;
+                        conn.flush()?;
+                        std::thread::sleep(Duration::from_millis(4));
+                    }
+                    conn.free_gc(gc)?.check()?;
+                    Ok(())
+                }));
+            }
+            ["paint", "off"] => {
+                painting.store(false, Ordering::Release);
+                if let Some(worker) = painter.take() {
+                    worker
+                        .join()
+                        .map_err(|_| anyhow::anyhow!("Painter panicked"))??;
+                }
             }
             ["border", width] => {
                 conn.configure_window(
@@ -315,6 +364,12 @@ fn native_geometry_client() -> Result<()> {
         }
         println!("GEOMETRY DONE");
         std::io::stdout().flush()?;
+    }
+    painting.store(false, Ordering::Release);
+    if let Some(worker) = painter {
+        worker
+            .join()
+            .map_err(|_| anyhow::anyhow!("Painter panicked"))??;
     }
     conn.destroy_window(window)?
         .check()

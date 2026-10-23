@@ -4,7 +4,7 @@
 flowchart TB
   A[Remote X11 Applications] <--> B[russh · SSH X11 Forwarding]
   B <--> C[XLibre Core · FB / Pixman]
-  C <--> D[Custom C DDX · ABI v3]
+  C <--> D[Custom C DDX · ABI v4]
   D <--> E[Rust Window / Framebuffer / Input State]
   E --> F[wgpu · Damage Texture Upload]
   E <--> G[winit · Native Windows and Events]
@@ -55,7 +55,7 @@ Mesa 18.0.5 已验证修复前同客户端报无匹配 FBConfig，修复后真�
 上游 procedure-dispatch 接口；provider 拒绝所有服务端间接上下文，ForceCurrent
 也拒绝对 direct-context tag 执行服务端 GL 请求。测试检查错误返回，避免无宿主
 GL dispatch 时意外执行绘图。此路径不提供服务端间接 GL、DRI2/DRI3 或宿主 GL GPU
-加速。帧缓冲和 C ABI 保持现有约束，新增 GLX provider 不改变 ABI v3。
+加速。帧缓冲和 C ABI 保持现有约束，新增 GLX provider 不改变几何同步的 ABI 约束。
 
 核心在所有平台禁用 MIT-SHM，避免 SSH/回环转发被误判为可访问宿主共享内存。
 回归包括无 MIT-SHM 的 TCP Mesa VBO 绘制、OpenGL 像素回读、OGRE 实际绘制，
@@ -66,7 +66,7 @@ GL dispatch 时意外执行绘图。此路径不提供服务端间接 GL、DRI2/
 
 Rust 内部 X11 连接同时驱动 Selection 与 WM_S0/SubstructureRedirect，避免两套事件消费者。处理 MapRequest、ConfigureRequest、常用 EWMH ClientMessage，维护客户端列表、堆叠顺序和活动窗口。DDX 将 ICCCM 尺寸约束、瞬态关系、坐标及窗口状态以固定 64 字节结构同步到 Rust；原生 MOVE/RESIZE/STATE 回到 C 的服务器线程执行。新建窗口保持隐藏，直到显式映射，避免未完成初始化的根桌面被呈现。
 
-原生关闭先发送 WM_DELETE_WINDOW；未声明协议时终止该 X11 客户端。鼠标点击提升并聚焦普通窗口，hover 不改变层级。override-redirect 保留弹出行为。Linux X11 宿主验证了双向几何与瞬态父窗口关系；Wayland 全局定位受协议限制，macOS/Wayland 的原生 owner 关系仍需专用实现及原生验证。ABI v3 拒绝旧版本插件，升级必须重建核心。
+原生关闭先发送 WM_DELETE_WINDOW；未声明协议时终止该 X11 客户端。鼠标点击提升并聚焦普通窗口，hover 不改变层级。override-redirect 保留弹出行为。Linux X11 宿主验证了双向几何与瞬态父窗口关系；Wayland 全局定位受协议限制，macOS/Wayland 的原生 owner 关系仍需专用实现及原生验证。ABI v4 拒绝旧版本插件，升级必须重建核心。
 
 ## 输入
 
@@ -122,7 +122,7 @@ XLibre 在线程自己的 BlockHandler 批量处理输入及累计 Damage，不�
 窗口生命周期钩子和属性写入回调标记元数据；只在标记后读取标题/窗口属性。
 C Bridge 仅对实际输出变化设置 pending，由 output_flush 合并通知 UI；空批次不通知。
 
-ABI v3 追加 input_fd、input_ack、output_flush。input_fd 返回 Backend 拥有的回环
+ABI v4 保留 v3 的 input_fd、input_ack、output_flush，并追加 window_geometry。input_fd 返回 Backend 拥有的回环
 socket，DDX 仅注册/注销，不关闭；生产者在队列入队后写入唤醒字节，消费者先确认
 通知再处理有界输入批次，未处理完的输入重新触发通知。队列和通知状态由同一锁保护。
 
@@ -159,8 +159,17 @@ UI 线程也能触发正常退出，不依赖周期性 X11 请求碰巧唤醒服
 
 ResizeWindow、ChangeBorderWidth 钩子独立标记几何变化，不依赖客户端绘制 Damage。
 原生 resize 输入也显式标脏；DDX 在消费输入后同步窗口及 framebuffer，再发布批次。
-RESIZE 的 detail 携带非零请求序号，output_flush 同时发布最终尺寸和确认序号；
-即使请求被约束到原尺寸，也必须确认。该约定使用 ABI v3 的既有字段。
+MOVE/RESIZE 的 detail 携带非零请求序号，input_poll 只领取请求，不产生确认。
+DDX 处理完成后，在同一份 GeometrySnapshot 中提交最终 WindowState、宽高和完成序号。
+window_geometry 暂存完整快照，output_flush 在 Backend 锁内一次性发布，并推进窗口的
+geometry_generation。映射也延迟至 flush，避免新窗口使用尚未提交的初始状态。
+即使请求被拒绝或被约束到原尺寸，也提交实际结果；销毁丢弃暂存快照。
+有待确认请求时强制采集几何，不依赖 metadata_dirty 或 Damage。
+
+原生几何配置使用 SubstructureRedirect 所有者的窗口管理器上下文同步执行。
+serverClient 的 ConfigureWindow 会先把 ConfigureRequest 转交内部 WM，Success
+并不保证 drawable 已改变；不能把这种异步转交当成完成。远端 X11 请求仍经过普通
+WM 策略。协议测试刻意暂停 WM tick，验证本地请求的几何应用不依赖后续往返。
 
 原生窗口等待最新本地请求的确认期间，不使用旧 framebuffer 尺寸反向调整窗口。
 程序发起的尺寸调整回声不重复发送给 XLibre；过期 Resized 事件先与实际客户区比较。
@@ -178,9 +187,16 @@ Linux 同一夹具验证被动窗口稳定性和远端 resize 的双端几何一
 位置之差换算。保留桌面负坐标，不把坐标乘以 DPI 比例；X border 已由 DDX
 从 drawable 原点中扣除，不再重复扣减。实际多屏、不同 DPI 行为仍需 Windows 验收。
 
-双向位置相等时不执行配置；原生位置目标仅发起一次，回声不再送回 X。
+UI 仅在已提交 generation 改变时向同步状态机传入整份几何，尺寸决策也使用
+快照宽高，不用可能处于下一批上传中的 framebuffer 尺寸推断确认结果。
+双向位置相等时不执行配置；原生位置目标在调用 OS 前即消费，回声不再送回 X。
+新的本地移动取消旧目标，避免拖动中残留目标被每轮重新换算并再次发起。
 UI 在事件批次结束时发送连续移动的最后一个值，遇到其他输入或另一个窗口的移动
 先提交前一段；Backend 再合并相邻同窗口 MOVE，保留 resize、按键和状态等顺序边界。
 不引入拖动定时器。协议测试检查 400 个排队移动只产生至多两次 ConfigureNotify，
 原生几何夹具覆盖双向移动、负坐标和非零 X border；Linux 夹具在无 WM 的 Xvfb 上
 模拟 ICCCM 合成位置通知，以触发 winit 的真实 Moved 路径。
+
+快照单元测试穿插领取输入、Damage、暂存和 flush，验证 UI 只能看到完整旧/新版本。
+原生夹具额外启用持续重绘，按约 3 ms 间隔执行 300 步移动，并统计实际原生位置
+纠正调用；服务器接受本地移动时，调用增量必须为零。Windows 分支由原生 CI 执行。

@@ -41,7 +41,7 @@ def cpu_time(process):
     raise RuntimeError("CPU sampling supports Windows and Linux")
 
 
-def geometry_client(binary, process, display, auth):
+def geometry_client(binary, process, display, auth, log):
     env = os.environ.copy()
     env.update(WAYX_GEOMETRY_DISPLAY=str(display), WAYX_GEOMETRY_AUTH=str(auth))
     client = subprocess.Popen([str(binary), "--ignored", "--nocapture"], env=env,
@@ -66,6 +66,13 @@ def geometry_client(binary, process, display, auth):
     def command(text):
         client.stdin.write(text + "\n"); client.stdin.flush()
         expect("GEOMETRY DONE")
+    def corrections():
+        return log.read_text().count("applying server position")
+    def verify_drag(before, steps=300):
+        count = corrections() - before
+        if count:
+            raise RuntimeError(f"Accepted local drag caused {count} native position corrections")
+        print(f"{steps}-step drag: zero native position corrections.", flush=True)
     try:
         expect("GEOMETRY READY")
         time.sleep(1)
@@ -129,9 +136,19 @@ def geometry_client(binary, process, display, auth):
                 if not user.SetWindowPos(hwnd, None, 0, 0, width+outer.right-outer.left-current[0], height+outer.bottom-outer.top-current[1], 0x16):
                     raise ctypes.WinError(ctypes.get_last_error())
             command("position 20 20 1000"); verify_position(20, 20)
+            before = corrections()
             for index in range(400):
                 move(100 + index, 120)
             command("position 499 120 1000"); verify_position(499, 120)
+            verify_drag(before, 400)
+            command("paint on")
+            before = corrections()
+            for index in range(300):
+                move(500 + index, 120)
+                time.sleep(.003)
+            command("position 799 120 1000"); verify_position(799, 120)
+            command("paint off")
+            verify_drag(before)
             command("remote-position -120 80"); verify_position(-120, 80)
             command("border 3")
             command("remote-position 140 160"); verify_position(140, 160)
@@ -155,7 +172,14 @@ def geometry_client(binary, process, display, auth):
             command("position 220 240 1000"); verify_position(220, 240)
         else:
             command("position 20 20 1000")
+            before = corrections()
             command("local-position 499 120")
+            verify_drag(before, 400)
+            command("paint on")
+            before = corrections()
+            command("drag-position 799 120")
+            command("paint off")
+            verify_drag(before)
             command("remote-position -120 80")
             command("border 3")
             command("remote-position 140 160")
@@ -223,7 +247,7 @@ with tempfile.TemporaryDirectory(prefix="wayx-idle-cpu-") as directory:
                 if elapsed > .05:
                     raise RuntimeError(f"Idle CPU time {elapsed:.3f}s exceeds 50 ms budget")
             if fixture is not None:
-                geometry_client(fixture, process, args.display, auth)
+                geometry_client(fixture, process, args.display, auth, log)
         except Exception:
             print(log.read_text(), flush=True)
             raise

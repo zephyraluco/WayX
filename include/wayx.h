@@ -5,11 +5,11 @@
 #ifdef __cplusplus
 extern "C" {
 #endif
-#define WAYX_ABI_VERSION 3u
+#define WAYX_ABI_VERSION 4u
 typedef struct WayxBackend WayxBackend;
 enum WayxEventKind { WAYX_MOTION=1, WAYX_BUTTON, WAYX_KEY, WAYX_SCROLL,
     WAYX_FOCUS, WAYX_CLOSE, WAYX_RESIZE, WAYX_TEXT, WAYX_CLIPBOARD, WAYX_SHUTDOWN, WAYX_MOVE, WAYX_STATE };
-/* RESIZE/MOVE detail may carry a nonzero sequence; Rust confirms it after output_flush. */
+/* RESIZE/MOVE detail is a request sequence, not a completion acknowledgement. */
 typedef struct WayxInputEvent {
     uint32_t kind, window, detail, flags;
     double x, y;
@@ -24,6 +24,11 @@ typedef struct WayxWindowState {
     uint32_t base_width,base_height,width_inc,height_inc;
     uint32_t min_aspect_num,min_aspect_den,max_aspect_num,max_aspect_den;
 } WayxWindowState;
+/* A final observation after processing inputs. No field is published separately. */
+typedef struct WayxGeometrySnapshot {
+    WayxWindowState state;
+    uint32_t width,height,move_ack,resize_ack;
+} WayxGeometrySnapshot;
 /* All callbacks return 0 for success, negative for error, except input_poll (1/0/error).
  * Handles may be shared by threads. Buffer pointers are borrowed only during a call.
  * Frame data is little-endian XRGB8888, starting at the damage rectangle's origin.
@@ -45,6 +50,8 @@ typedef struct WayxApi {
     int32_t (*input_fd)(WayxBackend*);
     int32_t (*input_ack)(WayxBackend*);
     int32_t (*output_flush)(WayxBackend*);
+    /* Stage a complete snapshot; output_flush publishes it atomically. */
+    int32_t (*window_geometry)(WayxBackend*,uint32_t,const WayxGeometrySnapshot*);
 } WayxApi;
 const WayxApi *wayx_get_api(void);
 WayxBackend *wayx_backend_new(void);

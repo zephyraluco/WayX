@@ -171,7 +171,7 @@ cargo run --locked -- serve --rootless --core build/xlibre/hw/wayx/libwayx-xserv
 
 rootless 内置窗口管理器取得 `WM_S0` 和 SubstructureRedirect，处理 map/configure、激活、层级、关闭及常用 EWMH 状态请求；不要同时运行其他 X11/Composite 窗口管理器。移动和缩放双向同步，`WM_NORMAL_HINTS` 约束尺寸，关闭优先通知 `WM_DELETE_WINDOW`，不支持该协议的应用使用 XKillClient 语义（同一客户端的其他窗口也会关闭）。override-redirect 弹出窗口无装饰且不主动获取焦点；X11 宿主建立原生 WM_TRANSIENT_FOR 关系。
 
-当前仍限定软件 32-bpp XRGB 显示，不支持透明 ARGB。窗口管理已在 Linux X11 宿主实际运行验证；Wayland 限制应用控制全局窗口位置，winit 也未提供通用的 Wayland/macOS 瞬态父窗口接口，这些平台行为尚未验收。C ABI 已升级至 **v3**，旧插件必须重新编译；新建窗口先隐藏，再由 DDX 显式 map。
+当前仍限定软件 32-bpp XRGB 显示，不支持透明 ARGB。窗口管理已在 Linux X11 宿主实际运行验证；Wayland 限制应用控制全局窗口位置，winit 也未提供通用的 Wayland/macOS 瞬态父窗口接口，这些平台行为尚未验收。C ABI 已升级至 **v4**，旧插件必须重新编译；新建窗口先隐藏，再由 DDX 显式 map。
 
 ## SSH X11 forwarding
 
@@ -377,7 +377,7 @@ cargo test --locked --test glx -- --ignored --nocapture
 内部 X11 连接使用一次性 socket readiness 通知；原生剪贴板兼容检查仍每 250 ms
 执行，不触发静止画面重绘。窗口元数据由生命周期钩子及属性写入标记更新。
 
-ABI v3 增加通知接口，客户端和 XLibre 核心须一同更新；旧核心不能与新客户端混用。
+ABI v4 增加完整几何快照回调，在 flush 时原子发布几何与完成序号；客户端和 XLibre 核心须一同更新，旧核心不能与新客户端混用。
 `--frames` 是自动化测试模式，会主动请求后续帧，不用于测量空闲呈现行为。
 Linux 的 `scripts/test-native.py --core ...` 包含带认证的 rootful/rootless 空载和静止
 窗口 CPU 时间检查（预热后 2 秒内低于 50 ms）、新增 Damage 后恢复呈现及正常退出检查。

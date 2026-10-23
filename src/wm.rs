@@ -269,7 +269,7 @@ impl WindowManager {
                         } else {
                             window.framebuffer.height
                         };
-                        let (width, height) = window.state.constrain(width, height);
+                        let (width, height) = window.geometry.state.constrain(width, height);
                         attrs = attrs.width(width).height(height);
                     }
                 }
@@ -375,9 +375,9 @@ impl WindowManager {
                 .windows
                 .values()
                 .filter(|window| {
-                    window.state.flags & window::ROOTLESS != 0
-                        && window.state.flags & window::OVERRIDE_REDIRECT == 0
-                        && (window.mapped || window.state.flags & window::MINIMIZED != 0)
+                    window.geometry.state.flags & window::ROOTLESS != 0
+                        && window.geometry.state.flags & window::OVERRIDE_REDIRECT == 0
+                        && (window.mapped || window.geometry.state.flags & window::MINIMIZED != 0)
                 })
                 .map(|window| window.id)
                 .collect();

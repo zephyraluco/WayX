@@ -189,6 +189,9 @@ impl PositionSync {
     pub fn target(&self) -> Option<(i32, i32)> {
         self.target
     }
+    pub fn take_target(&mut self) -> Option<(i32, i32)> {
+        self.target.take()
+    }
     pub fn native_move(&mut self, position: (i32, i32)) -> Option<u32> {
         if self.target == Some(position) {
             self.target = None;
@@ -239,6 +242,19 @@ mod position_tests {
         );
         assert_eq!(outer_for_client(client, client, outer), outer);
         assert_eq!(outer_for_client(client, client, client), client);
+    }
+    #[test]
+    fn remote_target_is_consumed_once_and_new_local_input_cancels_it() {
+        let mut sync = PositionSync::new((20, 20), 0);
+        sync.native_move((20, 20));
+        sync.server_update((30, 40), 0);
+        assert_eq!(sync.take_target(), Some((30, 40)));
+        assert_eq!(sync.take_target(), None);
+        sync.server_update((30, 40), 0);
+        assert_eq!(sync.take_target(), None);
+        sync.server_update((50, 60), 0);
+        assert!(sync.native_move((100, 110)).is_some());
+        assert_eq!(sync.take_target(), None);
     }
     #[test]
     fn rejected_move_is_acknowledged_without_echo() {

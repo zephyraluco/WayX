@@ -129,10 +129,9 @@ pub struct Window {
     pub x: i32,
     pub y: i32,
     pub mapped: bool,
-    pub state: crate::window::WindowState,
+    pub geometry: crate::window::GeometrySnapshot,
+    pub geometry_generation: u64,
     pub framebuffer: Framebuffer,
-    pub resize_ack: u32,
-    pub move_ack: u32,
 }
 
 /// Stable wire events. Keys carry physical USB HID usage codes; DDX maps to X keycodes.
@@ -172,8 +171,8 @@ pub struct Backend {
     events: VecDeque<InputEvent>,
     pub(crate) ui_wake: Option<crate::notify::UiWake>,
     pub(crate) output_pending: bool,
-    pub(crate) resize_acks: BTreeMap<u32, u32>,
-    pub(crate) move_acks: BTreeMap<u32, u32>,
+    pub(crate) pending_geometry: BTreeMap<u32, crate::window::GeometrySnapshot>,
+    pub(crate) pending_maps: BTreeMap<u32, bool>,
     pub worker_exited: bool,
     pub(crate) input_wake: Option<crate::notify::InputWake>,
 }
@@ -184,15 +183,22 @@ impl Backend {
         }
     }
     pub fn flush_output(&mut self) {
-        for (id, sequence) in std::mem::take(&mut self.resize_acks) {
-            if let Some(window) = self.windows.get_mut(&id) {
-                window.resize_ack = sequence;
+        for (id, geometry) in std::mem::take(&mut self.pending_geometry) {
+            if let Some(window) = self.windows.get_mut(&id)
+                && window.geometry != geometry
+            {
+                window.geometry = geometry;
+                window.geometry_generation = window.geometry_generation.wrapping_add(1).max(1);
                 self.output_pending = true;
             }
         }
-        for (id, sequence) in std::mem::take(&mut self.move_acks) {
-            if let Some(window) = self.windows.get_mut(&id) {
-                window.move_ack = sequence;
+        // A newly mapped window must not become visible before its first
+        // committed geometry. The whole publication holds the backend lock.
+        for (id, mapped) in std::mem::take(&mut self.pending_maps) {
+            if let Some(window) = self.windows.get_mut(&id)
+                && window.mapped != mapped
+            {
+                window.mapped = mapped;
                 self.output_pending = true;
             }
         }
@@ -231,10 +237,13 @@ impl Backend {
                 x: 0,
                 y: 0,
                 mapped: false,
-                state: Default::default(),
+                geometry: crate::window::GeometrySnapshot {
+                    width,
+                    height,
+                    ..Default::default()
+                },
+                geometry_generation: 0,
                 framebuffer: Framebuffer::new(width, height)?,
-                resize_ack: 0,
-                move_ack: 0,
             },
         );
         Ok(())
@@ -276,8 +285,8 @@ impl Backend {
             self.destroy(child)?;
         }
         self.windows.remove(&id);
-        self.resize_acks.remove(&id);
-        self.move_acks.remove(&id);
+        self.pending_geometry.remove(&id);
+        self.pending_maps.remove(&id);
         if self.focus == Some(id) {
             self.focus = None;
         }

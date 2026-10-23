@@ -14,6 +14,8 @@ extern int compRedirectSubwindows(ClientPtr, WindowPtr, int);
 typedef struct WayxWindow {
     XID id;
     unsigned int width, height;
+    uint32_t move_ack,resize_ack;
+    Bool geometry_pending;
     Bool seen, mapped;
     PixmapPtr pixmap;
     DamagePtr damage;
@@ -75,7 +77,7 @@ static void sync_rootless_windows(void) {
     if (!metadata_dirty) {
         Bool dirty=FALSE;
         for (WayxWindow *entry=wayx_windows;entry;entry=entry->next)
-            if (entry->mapped && (!entry->damage || !RegionNil(DamageRegion(entry->damage)))) {dirty=TRUE;break;}
+            if (entry->geometry_pending || (entry->mapped && (!entry->damage || !RegionNil(DamageRegion(entry->damage))))) {dirty=TRUE;break;}
         if (!dirty) return;
     }
     for (WayxWindow *entry=wayx_windows;entry;entry=entry->next) entry->seen=FALSE;
@@ -93,7 +95,11 @@ static void sync_rootless_windows(void) {
             entry->next=wayx_windows;wayx_windows=entry;
         }
         entry->seen=TRUE;
-        if (metadata_dirty) {window_title(window);sync_window_state(window);}
+        if (metadata_dirty || entry->geometry_pending) {
+            window_title(window);
+            sync_window_state(window,entry);
+            entry->geometry_pending=FALSE;
+        }
         Bool mapped=window->mapped && window->realized;
         if (entry->mapped!=mapped) {
             api->window_map(backend,entry->id,mapped);

@@ -7,11 +7,16 @@ int main(void) {
     assert(api->struct_size==sizeof(*api));
     assert(sizeof(WayxInputEvent)==64);
     assert(sizeof(WayxWindowState)==64);
+    assert(sizeof(WayxGeometrySnapshot)==80);
     WayxBackend *b=wayx_backend_new();
     assert(api->window_create(b,1,0,4,3)==0);
     assert(api->window_create(b,1,0,4,3)<0);
     WayxWindowState state={0};state.min_width=20;state.min_height=10;state.width_inc=8;
     assert(api->window_state(b,1,&state)==0);
+    WayxGeometrySnapshot geometry={0};geometry.state=state;
+    geometry.width=4;geometry.height=3;geometry.move_ack=11;geometry.resize_ack=17;
+    assert(api->window_geometry(b,1,&geometry)==0);
+    assert(api->output_flush(b)==0);
     uint32_t width=31,height=3;
     assert(api->window_constrain(b,1,&width,&height)==0 && width==24 && height==10);
     assert(api->window_constrain(b,1,&width,&width)<0);

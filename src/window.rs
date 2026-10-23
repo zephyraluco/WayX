@@ -51,6 +51,16 @@ pub struct WindowState {
     /// Maximum aspect denominator.
     pub max_aspect_den: u32,
 }
+/// One authoritative DDX observation, staged and committed as a single unit.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct GeometrySnapshot {
+    pub state: WindowState,
+    pub width: u32,
+    pub height: u32,
+    pub move_ack: u32,
+    pub resize_ack: u32,
+}
 impl WindowState {
     /// Validate untrusted window hints before they reach platform APIs.
     pub fn validate(&self) -> Result<(), Error> {

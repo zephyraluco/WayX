@@ -288,7 +288,7 @@ struct Native {
     resize_sync: crate::geometry::ResizeSync,
     issued_size: Option<(u32, u32)>,
     position_sync: crate::geometry::PositionSync,
-    issued_position: Option<(i32, i32)>,
+    geometry_generation: Option<u64>,
     title: String,
     transient_owner: Option<u32>,
     composing: bool,
@@ -305,12 +305,12 @@ impl Native {
         event_loop: &ActiveEventLoop,
         id: u32,
         title: &str,
-        size: (u32, u32),
-        state: &WindowState,
-        acknowledgements: (u32, u32),
+        geometry: &crate::window::GeometrySnapshot,
         owner: Option<&Window>,
     ) -> Result<Self> {
-        let (width, height) = size;
+        let state = &geometry.state;
+        let (width, height) = (geometry.width, geometry.height);
+        let acknowledgements = (geometry.resize_ack, geometry.move_ack);
         let popup = state.flags & window_state::OVERRIDE_REDIRECT != 0;
         let mut attributes = Window::default_attributes()
             .with_title(title)
@@ -384,7 +384,7 @@ impl Native {
                 (state.x, state.y),
                 acknowledgements.1,
             ),
-            issued_position: None,
+            geometry_generation: None,
             title: title.to_owned(),
             transient_owner: None,
             composing: false,
@@ -399,26 +399,29 @@ impl Native {
     }
     fn apply_state(
         &mut self,
-        state: &WindowState,
-        width: u32,
-        height: u32,
+        geometry: &crate::window::GeometrySnapshot,
+        generation: u64,
         title: &str,
-        acknowledgements: (u32, u32),
     ) -> Result<()> {
+        let state = &geometry.state;
+        let (width, height) = (geometry.width, geometry.height);
         if self.title != title {
             self.window.set_title(title);
             self.title = title.to_owned();
         }
         self.remote_size = (width, height);
-        self.resize_sync
-            .server_update((width, height), acknowledgements.0);
+        if self.geometry_generation != Some(generation) {
+            self.geometry_generation = Some(generation);
+            self.resize_sync
+                .server_update((width, height), geometry.resize_ack);
+            self.position_sync
+                .server_update((state.x, state.y), geometry.move_ack);
+        }
         if state.flags & window_state::ROOTLESS == 0 {
             self.sync_geometry(state);
             return Ok(());
         }
         let previous = self.applied_state;
-        self.position_sync
-            .server_update((state.x, state.y), acknowledgements.1);
         if previous != Some(*state) {
             self.window
                 .set_decorations(state.flags & window_state::OVERRIDE_REDIRECT == 0);
@@ -492,7 +495,6 @@ impl Native {
             return;
         }
         let Some(target) = self.position_sync.target() else {
-            self.issued_position = None;
             return;
         };
         let (Ok(client), Ok(outer)) = (self.window.inner_position(), self.window.outer_position())
@@ -501,16 +503,20 @@ impl Native {
         };
         if (client.x, client.y) == target {
             self.position_sync.native_move(target);
-            self.issued_position = None;
             return;
         }
         let outer =
             crate::geometry::outer_for_client(target, (client.x, client.y), (outer.x, outer.y));
-        if self.issued_position != Some(outer) {
-            self.issued_position = Some(outer);
-            self.window
-                .set_outer_position(winit::dpi::PhysicalPosition::new(outer.0, outer.1));
-        }
+        // Consume before calling the OS: a target may issue one operation only.
+        self.position_sync.take_target();
+        tracing::debug!(
+            window = self.id,
+            ?target,
+            ?outer,
+            "applying server position"
+        );
+        self.window
+            .set_outer_position(winit::dpi::PhysicalPosition::new(outer.0, outer.1));
     }
     fn sync_geometry(&mut self, state: &WindowState) {
         if state.flags & window_state::MINIMIZED != 0 || self.window.is_minimized().unwrap_or(false)
@@ -769,15 +775,13 @@ impl App {
                 let owner = self
                     .native
                     .values()
-                    .find(|native| native.id == window.state.transient_for)
+                    .find(|native| native.id == window.geometry.state.transient_for)
                     .map(|native| native.window.as_ref());
                 let native = pollster::block_on(Native::new(
                     event_loop,
                     window.id,
                     &window.title,
-                    (window.framebuffer.width, window.framebuffer.height),
-                    &window.state,
-                    (window.resize_ack, window.move_ack),
+                    &window.geometry,
                     owner,
                 ))?;
                 self.native.insert(native.window.id(), native);
@@ -787,16 +791,15 @@ impl App {
                 .values_mut()
                 .find(|native| native.id == window.id)
             {
-                native.apply_state(
-                    &window.state,
-                    window.framebuffer.width,
-                    window.framebuffer.height,
-                    &window.title,
-                    (window.resize_ack, window.move_ack),
-                )?;
+                native.apply_state(&window.geometry, window.geometry_generation, &window.title)?;
                 if let Some((sequence, (width, height))) = native.resize_sync.take_input() {
-                    let mut input =
-                        resize_input(native.id, &window.state, width, height, window.state.flags);
+                    let mut input = resize_input(
+                        native.id,
+                        &window.geometry.state,
+                        width,
+                        height,
+                        window.geometry.state.flags,
+                    );
                     input.detail = sequence;
                     resized.push(input);
                 }
@@ -812,8 +815,12 @@ impl App {
             .collect::<Result<HashMap<_, _>>>()?;
         for native in self.native.values_mut() {
             if let Some(window) = backend.windows.get(&native.id) {
-                native
-                    .sync_transient(owners.get(&window.state.transient_for).copied().flatten())?;
+                native.sync_transient(
+                    owners
+                        .get(&window.geometry.state.transient_for)
+                        .copied()
+                        .flatten(),
+                )?;
             }
             if let Some(window) = backend.windows.get(&native.id)
                 && (native.image.revision != window.framebuffer.revision
@@ -1037,7 +1044,6 @@ impl ApplicationHandler<()> for App {
                 let Some(sequence) = native.position_sync.native_move(position) else {
                     return;
                 };
-                native.issued_position = None;
                 tracing::trace!(?position, sequence, "native move queued");
                 input.kind = event::MOVE;
                 input.detail = sequence;
