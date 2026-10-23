@@ -8,7 +8,7 @@ use std::{
     collections::HashMap,
     sync::{
         Arc,
-        atomic::{AtomicBool, Ordering},
+        atomic::{AtomicBool, AtomicU64, Ordering},
     },
     time::{Duration, Instant},
 };
@@ -35,8 +35,13 @@ struct Output { @builtin(position) position: vec4<f32>, @location(0) uv: vec2<f3
 @fragment fn fs(in:Output)->@location(0) vec4<f32> { return textureSample(image,image_sampler,in.uv); }
 "#;
 struct Gpu {
-    device: wgpu::Device,
+    pipelines: std::sync::Mutex<HashMap<wgpu::TextureFormat, Arc<wgpu::RenderPipeline>>>,
+    shader: wgpu::ShaderModule,
+    pipeline_layout: wgpu::PipelineLayout,
+    binding_layout: wgpu::BindGroupLayout,
+    sampler: wgpu::Sampler,
     queue: wgpu::Queue,
+    device: wgpu::Device,
 }
 impl Gpu {
     async fn new(
@@ -58,19 +63,144 @@ impl Gpu {
                 None,
             )
             .await?;
-        Ok((Self { device, queue }, adapter))
+        let layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: None,
+            entries: &[
+                wgpu::BindGroupLayoutEntry {
+                    binding: 0,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Texture {
+                        sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                        view_dimension: wgpu::TextureViewDimension::D2,
+                        multisampled: false,
+                    },
+                    count: None,
+                },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 1,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
+                    count: None,
+                },
+            ],
+        });
+        let sampler = device.create_sampler(&wgpu::SamplerDescriptor {
+            mag_filter: wgpu::FilterMode::Nearest,
+            min_filter: wgpu::FilterMode::Nearest,
+            ..Default::default()
+        });
+        let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+            label: Some("WayX composition"),
+            source: wgpu::ShaderSource::Wgsl(SHADER.into()),
+        });
+        let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+            label: None,
+            bind_group_layouts: &[&layout],
+            push_constant_ranges: &[],
+        });
+        Ok((
+            Self {
+                device,
+                queue,
+                binding_layout: layout,
+                sampler,
+                shader,
+                pipeline_layout,
+                pipelines: std::sync::Mutex::new(HashMap::new()),
+            },
+            adapter,
+        ))
+    }
+    fn pipeline(&self, format: wgpu::TextureFormat) -> Result<Arc<wgpu::RenderPipeline>> {
+        let mut pipelines = self
+            .pipelines
+            .lock()
+            .map_err(|_| anyhow!("GPU pipeline cache poisoned"))?;
+        if let Some(pipeline) = pipelines.get(&format) {
+            return Ok(pipeline.clone());
+        }
+        let pipeline = self
+            .device
+            .create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+                label: Some("WayX framebuffer blit"),
+                layout: Some(&self.pipeline_layout),
+                vertex: wgpu::VertexState {
+                    module: &self.shader,
+                    entry_point: "vs",
+                    buffers: &[],
+                    compilation_options: Default::default(),
+                },
+                fragment: Some(wgpu::FragmentState {
+                    module: &self.shader,
+                    entry_point: "fs",
+                    targets: &[Some(wgpu::ColorTargetState {
+                        format,
+                        blend: None,
+                        write_mask: wgpu::ColorWrites::ALL,
+                    })],
+                    compilation_options: Default::default(),
+                }),
+                primitive: Default::default(),
+                depth_stencil: None,
+                multisample: Default::default(),
+                multiview: None,
+            });
+        let pipeline = Arc::new(pipeline);
+        pipelines.insert(format, pipeline.clone());
+        Ok(pipeline)
+    }
+}
+/// One instance, adapter and device for every native window in this serve.
+struct SharedGpu {
+    gpu: Gpu,
+    adapter: wgpu::Adapter,
+    instance: wgpu::Instance,
+    lost: Arc<std::sync::Mutex<Option<String>>>,
+}
+impl std::ops::Deref for SharedGpu {
+    type Target = Gpu;
+    fn deref(&self) -> &Gpu {
+        &self.gpu
+    }
+}
+impl SharedGpu {
+    fn check(&self) -> Result<()> {
+        let lost = self
+            .lost
+            .lock()
+            .map_err(|_| anyhow!("GPU device-loss state poisoned"))?;
+        if let Some(reason) = lost.as_ref() {
+            anyhow::bail!("Shared GPU failure: {reason}");
+        }
+        Ok(())
+    }
+    fn report(&self, windows: usize, phase: &str) {
+        if let Some(report) = self.instance.generate_report() {
+            let hub = report.hub_report(self.adapter.get_info().backend);
+            tracing::debug!(
+                phase,
+                windows,
+                surfaces = report.surfaces().num_kept_from_user,
+                devices = hub.devices.num_kept_from_user,
+                adapters = hub.adapters.num_kept_from_user,
+                textures = hub.textures.num_kept_from_user,
+                bindings = hub.bind_groups.num_kept_from_user,
+                pipelines = hub.render_pipelines.num_kept_from_user,
+                "GPU resource state"
+            );
+        }
     }
 }
 struct Image {
     texture: wgpu::Texture,
     binding: wgpu::BindGroup,
-    pipeline: wgpu::RenderPipeline,
+    pipeline: Arc<wgpu::RenderPipeline>,
     width: u32,
     height: u32,
     revision: u64,
 }
 impl Image {
-    fn new(gpu: &Gpu, width: u32, height: u32, format: wgpu::TextureFormat) -> Self {
+    fn new(gpu: &Gpu, width: u32, height: u32, format: wgpu::TextureFormat) -> Result<Self> {
         let texture = gpu.device.create_texture(&wgpu::TextureDescriptor {
             label: Some("XLibre framebuffer"),
             size: wgpu::Extent3d {
@@ -85,37 +215,9 @@ impl Image {
             usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
             view_formats: &[],
         });
-        let layout = gpu
-            .device
-            .create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-                label: None,
-                entries: &[
-                    wgpu::BindGroupLayoutEntry {
-                        binding: 0,
-                        visibility: wgpu::ShaderStages::FRAGMENT,
-                        ty: wgpu::BindingType::Texture {
-                            sample_type: wgpu::TextureSampleType::Float { filterable: true },
-                            view_dimension: wgpu::TextureViewDimension::D2,
-                            multisampled: false,
-                        },
-                        count: None,
-                    },
-                    wgpu::BindGroupLayoutEntry {
-                        binding: 1,
-                        visibility: wgpu::ShaderStages::FRAGMENT,
-                        ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
-                        count: None,
-                    },
-                ],
-            });
-        let sampler = gpu.device.create_sampler(&wgpu::SamplerDescriptor {
-            mag_filter: wgpu::FilterMode::Nearest,
-            min_filter: wgpu::FilterMode::Nearest,
-            ..Default::default()
-        });
         let binding = gpu.device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: None,
-            layout: &layout,
+            layout: &gpu.binding_layout,
             entries: &[
                 wgpu::BindGroupEntry {
                     binding: 0,
@@ -125,57 +227,19 @@ impl Image {
                 },
                 wgpu::BindGroupEntry {
                     binding: 1,
-                    resource: wgpu::BindingResource::Sampler(&sampler),
+                    resource: wgpu::BindingResource::Sampler(&gpu.sampler),
                 },
             ],
         });
-        let shader = gpu
-            .device
-            .create_shader_module(wgpu::ShaderModuleDescriptor {
-                label: Some("WayX composition"),
-                source: wgpu::ShaderSource::Wgsl(SHADER.into()),
-            });
-        let pipeline_layout = gpu
-            .device
-            .create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-                label: None,
-                bind_group_layouts: &[&layout],
-                push_constant_ranges: &[],
-            });
-        let pipeline = gpu
-            .device
-            .create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-                label: Some("WayX framebuffer blit"),
-                layout: Some(&pipeline_layout),
-                vertex: wgpu::VertexState {
-                    module: &shader,
-                    entry_point: "vs",
-                    buffers: &[],
-                    compilation_options: Default::default(),
-                },
-                fragment: Some(wgpu::FragmentState {
-                    module: &shader,
-                    entry_point: "fs",
-                    targets: &[Some(wgpu::ColorTargetState {
-                        format,
-                        blend: None,
-                        write_mask: wgpu::ColorWrites::ALL,
-                    })],
-                    compilation_options: Default::default(),
-                }),
-                primitive: Default::default(),
-                depth_stencil: None,
-                multisample: Default::default(),
-                multiview: None,
-            });
-        Self {
+        let pipeline = gpu.pipeline(format)?;
+        Ok(Self {
             texture,
             binding,
             pipeline,
             width,
             height,
             revision: 0,
-        }
+        })
     }
     fn upload(&mut self, gpu: &Gpu, fb: &Framebuffer) {
         if self.revision == fb.revision {
@@ -277,11 +341,13 @@ impl Image {
 }
 struct Native {
     id: u32,
-    window: Arc<Window>,
-    surface: wgpu::Surface<'static>,
-    gpu: Gpu,
-    config: wgpu::SurfaceConfiguration,
+    // Fields drop in declaration order. A surface must outlive its images,
+    // and the native window must outlive its surface.
     image: Image,
+    surface: wgpu::Surface<'static>,
+    window: Arc<Window>,
+    gpu: Arc<SharedGpu>,
+    config: wgpu::SurfaceConfiguration,
     cursor: (f64, f64),
     applied_state: Option<WindowState>,
     remote_size: (u32, u32),
@@ -307,6 +373,8 @@ impl Native {
         title: &str,
         geometry: &crate::window::GeometrySnapshot,
         owner: Option<&Window>,
+        shared: &mut Option<Arc<SharedGpu>>,
+        wake: &crate::notify::UiWake,
     ) -> Result<Self> {
         let state = &geometry.state;
         let (width, height) = (geometry.width, geometry.height);
@@ -351,12 +419,51 @@ impl Native {
             resize_sync.native_resize(initial_target);
         }
         window.set_ime_allowed(false);
-        let instance = wgpu::Instance::new(wgpu::InstanceDescriptor {
-            backends: wgpu::util::backend_bits_from_env().unwrap_or(wgpu::Backends::all()),
-            ..Default::default()
-        });
-        let surface = instance.create_surface(window.clone())?;
-        let (gpu, adapter) = Gpu::new(&instance, Some(&surface)).await?;
+        let (surface, gpu) = if let Some(gpu) = shared.as_ref() {
+            gpu.check()?;
+            (gpu.instance.create_surface(window.clone())?, gpu.clone())
+        } else {
+            let instance = wgpu::Instance::new(wgpu::InstanceDescriptor {
+                backends: wgpu::util::backend_bits_from_env().unwrap_or(wgpu::Backends::all()),
+                ..Default::default()
+            });
+            let surface = instance.create_surface(window.clone())?;
+            let (gpu, adapter) = Gpu::new(&instance, Some(&surface)).await?;
+            let lost = Arc::new(std::sync::Mutex::new(None));
+            let failure = lost.clone();
+            let notify = wake.clone();
+            gpu.device.on_uncaptured_error(Box::new(move |error| {
+                if let Ok(mut failure) = failure.lock()
+                    && failure.is_none()
+                {
+                    *failure = Some(format!("uncaptured GPU error: {error}"));
+                }
+                notify();
+            }));
+            let failure = lost.clone();
+            let wake = wake.clone();
+            gpu.device.set_device_lost_callback(move |reason, message| {
+                if let Ok(mut failure) = failure.lock()
+                    && failure.is_none()
+                {
+                    *failure = Some(format!("device lost ({reason:?}): {message}"));
+                }
+                wake();
+            });
+            let gpu = Arc::new(SharedGpu {
+                gpu,
+                adapter,
+                instance,
+                lost,
+            });
+            *shared = Some(gpu.clone());
+            tracing::info!("shared GPU device initialized");
+            (surface, gpu)
+        };
+        anyhow::ensure!(
+            gpu.adapter.is_surface_supported(&surface),
+            "Window surface is incompatible with the shared GPU adapter"
+        );
         anyhow::ensure!(
             width <= gpu.device.limits().max_texture_dimension_2d
                 && height <= gpu.device.limits().max_texture_dimension_2d,
@@ -364,10 +471,10 @@ impl Native {
         );
         let size = window.inner_size();
         let config = surface
-            .get_default_config(&adapter, size.width.max(1), size.height.max(1))
+            .get_default_config(&gpu.adapter, size.width.max(1), size.height.max(1))
             .context("Surface incompatible with adapter")?;
         surface.configure(&gpu.device, &config);
-        let image = Image::new(&gpu, width, height, config.format);
+        let image = Image::new(&gpu, width, height, config.format)?;
         Ok(Self {
             id,
             window,
@@ -597,7 +704,7 @@ impl Native {
                     && fb.height <= self.gpu.device.limits().max_texture_dimension_2d,
                 "Framebuffer dimensions exceed GPU limits"
             );
-            self.image = Image::new(&self.gpu, fb.width, fb.height, self.config.format);
+            self.image = Image::new(&self.gpu, fb.width, fb.height, self.config.format)?;
         }
         self.image.upload(&self.gpu, fb);
         if let Some(preedit) = &self.preedit {
@@ -650,6 +757,10 @@ struct App {
     ui_wake: crate::notify::UiWake,
     selection_watch: Option<crate::selection::ReadinessWatch>,
     native: HashMap<WindowId, Native>,
+    gpu: Option<Arc<SharedGpu>>,
+    gpu_retired: Arc<AtomicU64>,
+    gpu_retirement_generation: u64,
+    gpu_reported_generation: u64,
     clipboard: Option<arboard::Clipboard>,
     preedit_painter: Option<crate::preedit::Painter>,
     clipboard_revision: u64,
@@ -811,8 +922,38 @@ impl App {
             .backend
             .lock()
             .map_err(|_| anyhow!("backend mutex poisoned"))?;
+        if let Some(gpu) = &self.gpu {
+            gpu.check()?;
+        }
+        let previous_windows = self.native.len();
         self.native
             .retain(|_, native| backend.windows.get(&native.id).is_some_and(|w| w.mapped));
+        if self.native.len() != previous_windows
+            && let Some(gpu) = &self.gpu
+        {
+            gpu.queue.submit(std::iter::empty());
+            self.gpu_retirement_generation = self.gpu_retirement_generation.wrapping_add(1).max(1);
+            let generation = self.gpu_retirement_generation;
+            let retired = self.gpu_retired.clone();
+            let wake = self.ui_wake.clone();
+            gpu.queue.on_submitted_work_done(move || {
+                retired.fetch_max(generation, Ordering::Release);
+                wake();
+            });
+        }
+        if let Some(gpu) = &self.gpu {
+            gpu.device.poll(wgpu::Maintain::Poll);
+            gpu.check()?;
+            let completed = self.gpu_retired.load(Ordering::Acquire);
+            // An older completion cannot attest to resources dropped by a
+            // newer batch. Report only once the latest retirement has finished.
+            if completed == self.gpu_retirement_generation
+                && completed != self.gpu_reported_generation
+            {
+                self.gpu_reported_generation = completed;
+                gpu.report(self.native.len(), "retired");
+            }
+        }
         let mut resized = Vec::new();
         for window in backend.windows.values() {
             if !window.mapped {
@@ -830,8 +971,13 @@ impl App {
                     &window.title,
                     &window.geometry,
                     owner,
+                    &mut self.gpu,
+                    &self.ui_wake,
                 ))?;
                 self.native.insert(native.window.id(), native);
+                if let Some(gpu) = &self.gpu {
+                    gpu.report(self.native.len(), "created");
+                }
             }
             if let Some(native) = self
                 .native
@@ -1502,6 +1648,10 @@ pub fn run(
         pending_move: None,
         backend,
         native: HashMap::new(),
+        gpu: None,
+        gpu_retired: Arc::new(AtomicU64::new(0)),
+        gpu_retirement_generation: 0,
+        gpu_reported_generation: 0,
         clipboard: None,
         preedit_painter: None,
         clipboard_revision: 0,
@@ -1523,6 +1673,14 @@ pub fn run(
     };
     let event_result = event_loop.run_app(&mut app);
     app.layout_ready.take();
+    // Only shutdown waits for GPU completion. Normal window retirement polls.
+    app.native.clear();
+    if let Some(gpu) = app.gpu.take()
+        && gpu.check().is_ok()
+    {
+        gpu.queue.submit(std::iter::empty());
+        gpu.device.poll(wgpu::Maintain::Wait);
+    }
     // Close the internal selection client, then request orderly server teardown.
     app.selection_watch.take();
     app.selection.take();
@@ -1563,7 +1721,7 @@ pub async fn gpu_smoke() -> Result<()> {
     });
     let (gpu, _) = Gpu::new(&instance, None).await?;
     let format = wgpu::TextureFormat::Rgba8UnormSrgb;
-    let mut image = Image::new(&gpu, 2, 2, format);
+    let mut image = Image::new(&gpu, 2, 2, format)?;
     let mut fb = Framebuffer::new(2, 2)?;
     fb.upload(
         Rect {

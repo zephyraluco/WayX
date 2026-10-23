@@ -85,7 +85,7 @@ jobs:
       - name: Native X11 rendering and XLibre lifecycle
         env:
           WGPU_BACKEND: vulkan
-        run: python3 scripts/test-native.py --binary target/release/wayx --core build/xlibre/hw/wayx/libwayx-xserver.so --glx-client /tmp/wayx-glx-client
+        run: python3 scripts/test-native.py --binary target/release/wayx --core build/xlibre/hw/wayx/libwayx-xserver.so --glx-client /tmp/wayx-glx-client --gpu-cycles
       - uses: actions/upload-artifact@v4
         with:
           name: xlibre-Linux-${{ runner.arch }}-${{ github.sha }}

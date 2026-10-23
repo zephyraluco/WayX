@@ -390,3 +390,14 @@ Windows CI 使用 `scripts/test-idle-cpu.py --binary ... --core ...` 测量带�
 仅在真实预编辑/提交时重新校验 X 焦点。X11 剪贴板 owner 变化使用 XFixes 通知。
 空闲 UI 同步不再反复发送这些查询；同步处理期间暂停 readiness 通知，并处理期间
 缓存的 X11 事件后才重新注册，避免协议应答造成自激唤醒。
+
+## GPU 设备与多窗口内存
+
+serve 在首个原生窗口出现时初始化共享 GPU，后续窗口复用同一 Instance、Adapter、
+Device/Queue；窗口各自保留 Surface 和图像纹理。关闭窗口会释放窗口资源，设备与
+按格式缓存的管线保留到退出，避免反复开窗创建设备。新 Surface 不兼容共享 Adapter
+或设备丢失时明确报错。
+
+用 `scripts/test-idle-cpu.py --binary ... --core ... --gpu-cycles` 验证反复开关、
+双窗口独立关闭和资源计数；Linux 需要原生 X11 宿主。工作集不要求回到 GPU 初始化前，
+验收重点为预热后不再随窗口开关线性增长。Windows CI 同时检查私有提交量。

@@ -41,6 +41,141 @@ def cpu_time(process):
     raise RuntimeError("CPU sampling supports Windows and Linux")
 
 
+def memory_usage(process):
+    if sys.platform == "win32":
+        import ctypes
+        from ctypes import wintypes
+        class Counters(ctypes.Structure):
+            _fields_ = [("cb", wintypes.DWORD), ("PageFaultCount", wintypes.DWORD)] + [
+                (name, ctypes.c_size_t) for name in ["PeakWorkingSetSize", "WorkingSetSize", "QuotaPeakPagedPoolUsage",
+                "QuotaPagedPoolUsage", "QuotaPeakNonPagedPoolUsage", "QuotaNonPagedPoolUsage", "PagefileUsage", "PeakPagefileUsage", "PrivateUsage"]]
+        kernel = ctypes.WinDLL("kernel32", use_last_error=True)
+        psapi = ctypes.WinDLL("psapi", use_last_error=True)
+        kernel.OpenProcess.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
+        kernel.OpenProcess.restype = wintypes.HANDLE
+        kernel.CloseHandle.argtypes = [wintypes.HANDLE]
+        psapi.GetProcessMemoryInfo.argtypes = [wintypes.HANDLE, ctypes.POINTER(Counters), wintypes.DWORD]
+        psapi.GetProcessMemoryInfo.restype = wintypes.BOOL
+        handle = kernel.OpenProcess(0x410, False, process.pid)
+        if not handle:
+            raise ctypes.WinError(ctypes.get_last_error())
+        try:
+            counters = Counters(); counters.cb = ctypes.sizeof(counters)
+            if not psapi.GetProcessMemoryInfo(handle, ctypes.byref(counters), counters.cb):
+                raise ctypes.WinError(ctypes.get_last_error())
+            return counters.WorkingSetSize, counters.PrivateUsage
+        finally:
+            kernel.CloseHandle(handle)
+    status = Path(f"/proc/{process.pid}/status").read_text()
+    rss = int(next(line.split()[1] for line in status.splitlines() if line.startswith("VmRSS:"))) * 1024
+    rollup = Path(f"/proc/{process.pid}/smaps_rollup").read_text()
+    private = sum(int(line.split()[1]) * 1024 for line in rollup.splitlines() if line.startswith(("Private_Clean:", "Private_Dirty:")))
+    return rss, private
+
+
+def build_fixture(name):
+    command = ["cargo", "test", "--locked", "--test", name, "--no-run", "--message-format=json"]
+    if sys.platform == "win32":
+        command.append("--release")
+    built = subprocess.run(command, capture_output=True, text=True)
+    if built.returncode != 0:
+        raise RuntimeError(built.stdout + built.stderr)
+    for line in built.stdout.splitlines():
+        item = json.loads(line)
+        if item.get("reason") == "compiler-artifact" and item.get("target", {}).get("name") == name and item.get("executable"):
+            return Path(item["executable"])
+    raise RuntimeError(f"No {name} test executable")
+
+
+def gpu_cycles(binary, process, display, auth, log):
+    import re
+    env = os.environ.copy()
+    env.update(WAYX_GEOMETRY_DISPLAY=str(display), WAYX_GEOMETRY_AUTH=str(auth))
+    client = subprocess.Popen([str(binary), "--ignored", "--nocapture"], env=env,
+                              stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+    lines = queue.Queue()
+    def read_lines():
+        for line in client.stdout:
+            lines.put(line.rstrip())
+        lines.put(None)
+    reader = threading.Thread(target=read_lines, daemon=True); reader.start()
+    def expect(message):
+        deadline = time.monotonic() + 20
+        received = []
+        while time.monotonic() < deadline:
+            line = lines.get(timeout=max(.01, deadline-time.monotonic()))
+            if line is None:
+                raise RuntimeError(f"GPU client exited before {message}: {received}")
+            received.append(line)
+            if line == message:
+                return received
+        raise RuntimeError(f"GPU client timeout: {received}")
+    def command(text):
+        start = len(log.read_text())
+        client.stdin.write(text + "\n"); client.stdin.flush()
+        output = expect("GPU DONE")
+        return start, output
+    def resources(windows, start=0, retired=False):
+        deadline = time.monotonic() + 20
+        while time.monotonic() < deadline:
+            for line in reversed(log.read_text()[start:].splitlines()):
+                if "GPU resource state" not in line or (retired and 'phase="retired"' not in line):
+                    continue
+                values = {name: int(value) for name, value in re.findall(r"\b(windows|surfaces|devices|adapters|textures|bindings|pipelines)=(\d+)", line)}
+                if values.get("windows") != windows:
+                    continue
+                if values.get("devices") != 1 or values.get("adapters") != 1 or values.get("surfaces") != windows or values.get("textures") != windows or values.get("bindings") != windows or values.get("pipelines") != 1:
+                    raise RuntimeError(f"Unexpected GPU lifetime resources: {line}")
+                return
+            if process.poll() is not None:
+                raise RuntimeError("GPU server exited: " + log.read_text())
+            time.sleep(.02)
+        raise RuntimeError(f"No GPU resource report for {windows} windows")
+    def opened(width, height, count=1):
+        start, output = command(f"open {width} {height} {count}")
+        ids = next(line[len("GPU OPEN "):].split(",") for line in output if line.startswith("GPU OPEN "))
+        resources(count, start)
+        deadline = time.monotonic()+15
+        while not all(f"frame presented window={identifier}" in log.read_text()[start:] for identifier in ids):
+            if time.monotonic() >= deadline:
+                raise RuntimeError("GPU lifecycle windows were not presented")
+            time.sleep(.02)
+    def closed():
+        start, _ = command("close")
+        resources(0, start, retired=True)
+        time.sleep(.1)
+        return memory_usage(process)
+    try:
+        expect("GPU READY")
+        opened(200, 200, 2)
+        command("resize 400 320")
+        start, _ = command("close-one")
+        resources(1, start, retired=True)
+        closed()
+        for width, height in [(200, 200), (1600, 1000)]:
+            for _ in range(4):
+                opened(width, height); closed()
+            samples = []
+            for cycle in range(12):
+                opened(width, height)
+                rss, private = closed(); samples.append(private)
+                print(f"GPU cycle {width}x{height} {cycle+1}: RSS={rss/2**20:.1f} MiB private={private/2**20:.1f} MiB", flush=True)
+            growth = sum(samples[-3:])/3-sum(samples[:3])/3
+            if growth > 32*2**20:
+                raise RuntimeError(f"Post-warmup GPU memory growth {growth/2**20:.1f} MiB exceeds 32 MiB budget")
+        contents = log.read_text()
+        if contents.count("shared GPU device initialized") != 1 or contents.count("render adapter") != 1:
+            raise RuntimeError("Native windows recreated the shared GPU device/adapter")
+        client.stdin.write("quit\n"); client.stdin.flush(); client.stdin.close()
+        if client.wait(timeout=5) != 0:
+            raise RuntimeError("GPU lifecycle client failed")
+        print("Shared GPU lifetime passed: one device, isolated multi-window close, zero live window resources after retirement, bounded memory growth.", flush=True)
+    finally:
+        if client.poll() is None:
+            client.kill(); client.wait()
+        reader.join(timeout=2)
+
+
 def geometry_client(binary, process, display, auth, log):
     env = os.environ.copy()
     env.update(WAYX_GEOMETRY_DISPLAY=str(display), WAYX_GEOMETRY_AUTH=str(auth))
@@ -206,21 +341,10 @@ parser.add_argument("--binary", type=Path, required=True)
 parser.add_argument("--core", type=Path, required=True)
 parser.add_argument("--display", type=int, default=199)
 parser.add_argument("--geometry", action="store_true")
+parser.add_argument("--gpu-cycles", action="store_true")
 args = parser.parse_args()
-fixture = None
-if args.geometry:
-    build_command = ["cargo", "test", "--locked", "--test", "native_geometry", "--no-run", "--message-format=json"]
-    if sys.platform == "win32":
-        build_command.append("--release")  # Reuse the native CI release dependencies.
-    built = subprocess.run(build_command, capture_output=True, text=True)
-    if built.returncode != 0:
-        raise RuntimeError(built.stdout + built.stderr)
-    for line in built.stdout.splitlines():
-        item = json.loads(line)
-        if item.get("reason") == "compiler-artifact" and item.get("target", {}).get("name") == "native_geometry" and item.get("executable"):
-            fixture = Path(item["executable"])
-    if fixture is None:
-        raise RuntimeError("No native geometry test executable")
+fixture = build_fixture("native_geometry") if args.geometry else None
+gpu_fixture = build_fixture("native_gpu") if args.gpu_cycles else None
 with tempfile.TemporaryDirectory(prefix="wayx-idle-cpu-") as directory:
     auth = Path(directory) / "Xauthority"
     log = Path(directory) / "serve.log"
@@ -251,6 +375,8 @@ with tempfile.TemporaryDirectory(prefix="wayx-idle-cpu-") as directory:
                     raise RuntimeError(f"Idle CPU time {elapsed:.3f}s exceeds 50 ms budget")
             if fixture is not None:
                 geometry_client(fixture, process, args.display, auth, log)
+            if gpu_fixture is not None:
+                gpu_cycles(gpu_fixture, process, args.display, auth, log)
         except Exception:
             print(log.read_text(), flush=True)
             raise

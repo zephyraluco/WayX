@@ -7,6 +7,7 @@ import shutil
 import shlex
 import select
 import subprocess
+import sys
 import tempfile
 import time
 
@@ -14,6 +15,7 @@ parser = argparse.ArgumentParser()
 parser.add_argument("--binary", type=Path, default=Path("target/debug/wayx"))
 parser.add_argument("--core", type=Path)
 parser.add_argument("--glx-client", type=Path)
+parser.add_argument("--gpu-cycles", action="store_true")
 args = parser.parse_args()
 binary = str(args.binary.resolve())
 xvfb = os.environ.get("WAYX_TEST_XVFB") or shutil.which("Xvfb")
@@ -197,6 +199,10 @@ with tempfile.TemporaryDirectory(prefix="wayx-native-") as temp:
                                           env=env, capture_output=True, text=True, timeout=5)
                 if conflict.returncode == 0 or "conflict with the host desktop" not in conflict.stdout + conflict.stderr:
                     raise RuntimeError("Rootless conflicting screen options did not fail clearly: " + conflict.stdout + conflict.stderr)
+            if args.gpu_cycles and args.core:
+                subprocess.run([sys.executable, "scripts/test-idle-cpu.py", "--binary", binary,
+                                "--core", str(args.core.resolve()), "--display", str(core_display), "--gpu-cycles"],
+                               env=env, check=True, timeout=180)
             failed = subprocess.run([binary, "serve", "--rootless", "--core", str(Path(temp) / "missing-core")], env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=5)
             if failed.returncode == 0:
                 raise RuntimeError("Missing core did not fail")

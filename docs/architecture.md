@@ -16,7 +16,7 @@ flowchart TB
 
 ## 所有权与线程
 
-主线程拥有 winit EventLoop、原生窗口、wgpu surface/device/queue、本地剪贴板，以及非阻塞轮询的 X11 Selection 适配器。XLibre 的 `dix_main` 位于独立工作线程；所有 X Server 数据结构只在该线程访问。C DDX 将帧缓冲借用到 Rust 回调中，Rust 在调用返回前完成有界复制，不持有 C 缓冲指针。
+主线程拥有 winit EventLoop、原生窗口、各窗口 surface、进程共享的 wgpu device/queue、本地剪贴板，以及非阻塞轮询的 X11 Selection 适配器。XLibre 的 `dix_main` 位于独立工作线程；所有 X Server 数据结构只在该线程访问。C DDX 将帧缓冲借用到 Rust 回调中，Rust 在调用返回前完成有界复制，不持有 C 缓冲指针。
 
 共享状态由 `Arc<Mutex<Backend>>` 管理。ABI 使用不透明 handle 和完整 `WayxApi` 回调表，带版本和结构体尺寸检查。禁止把 Rust 对象、字符串或 Vec 布局当成 C 类型。销毁 handle 必须等待所有调用结束。无效非空指针无法由 ABI 安全验证，调用方仍有义务保证指针有效。
 
@@ -223,3 +223,23 @@ X11 使用独立宿主 RandR 连接和一次性 readiness，避免混入内部 X
 Rust 像素为 1×1；C root 保留正常 vfb pixmap。热插拔可以重分配 C 存储；不采用
 固定最大 stride 或缺页处理，避免改变 XWD/vfb 的存储约束。协议回归覆盖屏幕右下
 点击、负坐标、原点平移、2→3→1 输出、Rust root 4 字节以及拖动零 RandR 广播。
+
+## 共享 GPU 与窗口资源回收
+
+App 在第一个原生窗口出现时创建一套 Instance、Adapter、Device 和 Queue，并保留到
+serve 退出。零窗口启动仍不初始化 GPU；最后一个窗口关闭也不销毁共享设备，后续
+窗口复用原实例创建自己的 Surface，并校验 Adapter 兼容性。不兼容明确报错，不
+回退到每窗口创建设备。Device lost 回调记录错误并唤醒 UI，统一结束会话。
+
+共享 shader、sampler、绑定布局及 pipeline layout；渲染管线按 Surface 格式缓存。
+每窗口仍独立拥有图像纹理、绑定组、Surface、尺寸及呈现状态。销毁按 image→surface
+→原生窗口的顺序释放。批量移除后提交空队列以刷新尚未提交的 write_texture，并在
+正常同步时非阻塞 Poll；提交完成回调通知 UI 检查回收。仅退出时清空窗口并 Wait，
+避免正常关闭窗口阻塞 UI。该改动保持 C ABI v5。
+
+`test-idle-cpu.py --gpu-cycles` 驱动真实原生窗口，覆盖双窗口独立关闭和 resize，再对
+200×200、1600×1000 各预热四次并测量十二次开关。wgpu registry 报告检查共享设备
+与适配器保持一套、关闭后的 Surface/纹理/绑定组归零、管线缓存稳定。Windows 采样
+工作集与私有提交量，Linux 采样 RSS 与私有驻留页；预热后末三次平均私有内存相对
+前三次的增长预算为 32 MiB。此预算用于拦截持续增长，不要求回到全新进程基线；
+驱动/分配器允许缓存，实际 Windows 驱动仍需实机验证。

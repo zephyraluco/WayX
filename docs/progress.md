@@ -87,3 +87,10 @@
 - Linux 原生自动布局下 rootful/rootless、GLX、静止零额外 present、空载 CPU 和带重绘的拖动回归通过；冲突的手工屏幕参数明确失败。
 - Windows 使用独立隐藏顶层窗口接收显示变化，X11 使用宿主 RandR readiness，其他后端保留布局兼容检查。Windows/macOS 的真实热插拔与不同 DPI 体验仍需原生验收。
 - ABI v5；客户端和 XLibre 核心必须一起更新。rootless 不再根据窗口拖动扩屏，C root 存储仍在宿主布局变化时正常调整。
+
+## 共享 GPU 生命周期验证
+
+- App 懒初始化并持有一套 Instance/Adapter/Device/Queue；窗口保留独立 Surface 与图像，管线按格式缓存，最后一个窗口关闭后仍复用设备。
+- Linux Vulkan 软件驱动：双窗口独立关闭、resize、200×200/1600×1000 各预热四轮再测十二轮，设备计数保持一套；回收完成后的 Surface/纹理/绑定组归零，大窗口测量阶段私有驻留增长约 0.1 MiB。
+- GPU smoke、原生 rootful/rootless、GLX、CPU 和持续重绘拖动回归通过。Linux/Windows CI 增加生命周期资源及内存增长预算；Windows 私有提交量与实际 Intel 驱动仍待原生 CI/实机确认。
+- 此项不改变 C ABI v5，也不要求关闭全部窗口后回到 GPU 初始化前的内存基线。
