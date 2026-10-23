@@ -354,8 +354,8 @@ Ubuntu 16.04 的 OGRE 1.9 也通过实际场景绘制、回读及 WayX 像素检
 ```
 
 3D 运算消耗远端 CPU，动态图像会占用传输带宽。OGRE 回归不等同于特定 ROS Kinetic/
-RViz 安装的实机验收；该环境还需按上述命令验证。透明
-ARGB、服务端间接 OpenGL 和硬件 DRI 仍属于未完成的显示扩展。
+RViz 安装的实机验收；该环境还需按上述命令验证。透明 ARGB 仍属于未完成的显示扩展。
+宿主 GPU GLX、DRI2/DRI3 和服务端间接 OpenGL 不纳入后续规划。
 
 Linux 渲染验证（需 Mesa、GL/X11 开发包及 `libogre-1.12-dev`）：
 
