@@ -73,7 +73,7 @@ Windows 使用固定版本 vcpkg 编译 C 依赖，再用 MSYS2 UCRT64 构建协
 
 从 [Integration 构建记录](https://github.com/zephyraluco/WayX/actions/workflows/integration.yml)
 下载 `macos-core-runtime-<x64或arm64>-<完整提交SHA>`。
-解压 GitHub Artifact 的 ZIP，再解压里面的同名 `.tar.gz`，进入 `runtime`。
+解压 GitHub Artifact 的 ZIP 即可；解压目录顶层直接包含 `bin`、`lib`、`share` 和启动脚本，无需再次解压。
 运行包的二进制架构需与本机兼容，可用 `file bin/wayx` 和 `uname -m` 检查。
 不需要 XQuartz。
 
@@ -241,13 +241,14 @@ cargo run --locked -- gpu-smoke
 ### CI 构建产物下载
 
 [Integration](https://github.com/zephyraluco/WayX/actions/workflows/integration.yml) 的 Linux、Windows、macOS
-三个 job 并行执行 Build → Bundle → Test → Upload，互不等待。测试使用归档解压到
-含空格目录的完整运行包；测试通过后上传 runtime，测试日志与结果始终尝试上传。
+三个 job 并行执行 Build → Bundle → Test → Upload，互不等待。测试使用复制到
+含空格目录并校验内容的完整运行包；测试通过后上传 runtime，测试日志与结果始终尝试上传。
 只上传 runtime 和 result，保留 7 天；预编译测试夹具只在当前 runner 本地使用。
 
 产物名称统一为 `<平台>-core-runtime-<x64或arm64>-<完整提交SHA>`；平台为
-`linux`、`windows`、`macos`，架构按实际 Rust 构建目标记录。Windows 包内为同名 ZIP，
-Linux/macOS 为同名 tar.gz，并附 SHA-256 文件；运行目录为 `runtime`。
+`linux`、`windows`、`macos`，架构按实际 Rust 构建目标记录。下载后只需解压一次，顶层即为 `bin`、`lib`、`share`、许可证及启动脚本，
+不再嵌套 ZIP/tar.gz 或附带归档 SHA-256 文件。`manifest.json` 保留文件完整性校验。
+GitHub Artifact 不保留 Unix 执行权限，Linux/macOS 解压后运行 `chmod +x wayx.sh bin/*`。
 Linux 包以 Debian 13 / glibc 2.41 为兼容基线，显示服务与 GPU 驱动由宿主提供。
 macOS 使用 runner 的原生架构，不生成 universal 包。
 测试结果名称为 `<平台>-result-<RunID>-<Attempt>`。
@@ -256,7 +257,7 @@ macOS 使用 runner 的原生架构，不生成 universal 包。
 包含无默认特性配置。SSH、C ABI、X11 协议与原生 GUI 等集成测试由 `integration.yml` 执行。
 
 `release.yml` 在推送 `v*` 标签或手动触发时，复用该标签提交在默认分支已经通过
-Test 和 Integration 的三平台运行包，校验身份与归档哈希后发布运行包及校验文件，
+Test 和 Integration 的三平台运行包，校验身份与文件哈希后生成并发布单层 ZIP 运行包，
 不重新编译。手动触发需填写已存在的版本标签，可指定 Integration Run ID。
 完整运行包仍为实验性发行，不代表安装器、可信签名或自动更新已完成。
 

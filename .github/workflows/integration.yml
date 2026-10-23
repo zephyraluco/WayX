@@ -40,31 +40,31 @@ jobs:
           --compiler "$(command -v xkbcomp)" --xkb-dir "$(pkg-config --variable=xkbconfigdir xkbcomp)" \
           --license-dir build/xlibre-source --license-dir build/native-sources \
           --license-dir /usr/share/doc \
-          --output build/runtime --archive-dir build/runtime-archives
+          --output build/runtime
     - name: Build local integration fixtures
       id: test-kit
       run: python scripts/build-test-kit.py --runtime build/runtime --output build/test-kit --integration-only
     - name: Check Windows Screen hook syntax
       run: python scripts/test-ddx-window-hooks.py
-    - name: Verify and extract runtime archive into a path with spaces
+    - name: Verify and relocate runtime into a path with spaces
       shell: bash
       run: |
-        python scripts/extract-runtime.py --archives build/runtime-archives --output 'build/relocated runtime'
+        python scripts/relocate-runtime.py --runtime build/runtime --output 'build/relocated runtime' --expected-sha "${{ github.sha }}"
     - name: Test bundled runtime
       shell: bash
       env:
         EXPECTED_SHA: ${{ github.sha }}
       run: |
-        python scripts/test-package.py --runtime 'build/relocated runtime/runtime' --test-kit build/test-kit --expected-sha "$EXPECTED_SHA" --logs test-output
+        python scripts/test-package.py --runtime 'build/relocated runtime' --test-kit build/test-kit --expected-sha "$EXPECTED_SHA" --logs test-output
     - name: Upload tested runtime package
       uses: actions/upload-artifact@v4
       with:
         name: ${{ steps.bundle.outputs.artifact_name }}
-        path: build/runtime-archives/*
+        path: build/relocated runtime/
         if-no-files-found: error
         retention-days: 7
         overwrite: true
-        compression-level: 0
+        compression-level: 6
     - name: Upload integration diagnostics
       if: always()
       uses: actions/upload-artifact@v4
@@ -141,15 +141,15 @@ jobs:
       run: |
         $env:PATH = "$env:WAYX_MSYS2_ROOT/ucrt64/bin;" + $env:PATH
         $core = (Get-Content build/xlibre/wayx-core-path.txt).Trim()
-        python scripts/bundle-core.py --core $core --client target/release/wayx.exe --compiler build/windows-native/bin/xkbcomp.exe --xkb-dir build/windows-native/share/xkeyboard-config-2 --search-dir build/windows-installed/x64-windows/bin --search-dir "$env:WAYX_MSYS2_ROOT/ucrt64/bin" --license-dir build/xlibre-source --license-dir build/windows-installed/x64-windows/share --license-dir build/native-sources --output build/runtime --archive-dir build/runtime-archives
+        python scripts/bundle-core.py --core $core --client target/release/wayx.exe --compiler build/windows-native/bin/xkbcomp.exe --xkb-dir build/windows-native/share/xkeyboard-config-2 --search-dir build/windows-installed/x64-windows/bin --search-dir "$env:WAYX_MSYS2_ROOT/ucrt64/bin" --license-dir build/xlibre-source --license-dir build/windows-installed/x64-windows/share --license-dir build/native-sources --output build/runtime
         if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
     - name: Build local integration fixtures
       id: test-kit
       run: python scripts/build-test-kit.py --runtime build/runtime --output build/test-kit --integration-only
-    - name: Verify and extract runtime archive into a path with spaces
+    - name: Verify and relocate runtime into a path with spaces
       shell: bash
       run: |
-        python scripts/extract-runtime.py --archives build/runtime-archives --output 'build/relocated runtime'
+        python scripts/relocate-runtime.py --runtime build/runtime --output 'build/relocated runtime' --expected-sha "${{ github.sha }}"
     - name: Hide Windows core build dependencies
       shell: pwsh
       run: |
@@ -160,16 +160,16 @@ jobs:
       env:
         EXPECTED_SHA: ${{ github.sha }}
       run: |
-        python scripts/test-package.py --runtime 'build/relocated runtime/runtime' --test-kit build/test-kit --expected-sha "$EXPECTED_SHA" --logs test-output
+        python scripts/test-package.py --runtime 'build/relocated runtime' --test-kit build/test-kit --expected-sha "$EXPECTED_SHA" --logs test-output
     - name: Upload tested runtime package
       uses: actions/upload-artifact@v4
       with:
         name: ${{ steps.bundle.outputs.artifact_name }}
-        path: build/runtime-archives/*
+        path: build/relocated runtime/
         if-no-files-found: error
         retention-days: 7
         overwrite: true
-        compression-level: 0
+        compression-level: 6
     - name: Upload integration diagnostics
       if: always()
       uses: actions/upload-artifact@v4
@@ -206,29 +206,29 @@ jobs:
         python scripts/bundle-core.py --core "$(cat build/xlibre/wayx-core-path.txt)" --client target/release/wayx \
           --compiler "$(command -v xkbcomp)" --xkb-dir "$(pkg-config --variable=xkbconfigdir xkbcomp)" \
           --license-dir build/xlibre-source --license-dir build/native-sources \
-          --output build/runtime --archive-dir build/runtime-archives
+          --output build/runtime
     - name: Build local integration fixtures
       id: test-kit
       run: python scripts/build-test-kit.py --runtime build/runtime --output build/test-kit --integration-only
-    - name: Verify and extract runtime archive into a path with spaces
+    - name: Verify and relocate runtime into a path with spaces
       shell: bash
       run: |
-        python scripts/extract-runtime.py --archives build/runtime-archives --output 'build/relocated runtime'
+        python scripts/relocate-runtime.py --runtime build/runtime --output 'build/relocated runtime' --expected-sha "${{ github.sha }}"
     - name: Test bundled runtime
       shell: bash
       env:
         EXPECTED_SHA: ${{ github.sha }}
       run: |
-        python scripts/test-package.py --runtime 'build/relocated runtime/runtime' --test-kit build/test-kit --expected-sha "$EXPECTED_SHA" --logs test-output
+        python scripts/test-package.py --runtime 'build/relocated runtime' --test-kit build/test-kit --expected-sha "$EXPECTED_SHA" --logs test-output
     - name: Upload tested runtime package
       uses: actions/upload-artifact@v4
       with:
         name: ${{ steps.bundle.outputs.artifact_name }}
-        path: build/runtime-archives/*
+        path: build/relocated runtime/
         if-no-files-found: error
         retention-days: 7
         overwrite: true
-        compression-level: 0
+        compression-level: 6
     - name: Upload integration diagnostics
       if: always()
       uses: actions/upload-artifact@v4

@@ -7,7 +7,6 @@ import platform
 import re
 import subprocess
 import sys
-import tarfile
 import zipfile
 
 
@@ -36,6 +35,13 @@ def verify(root, expected_sha, kind):
     arch = {"AMD64":"x86_64", "arm64":"aarch64"}.get(platform.machine(), platform.machine())
     if (manifest["schema"], manifest["kind"], manifest["source_sha"], manifest["platform"], manifest["arch"]) != (1, kind, expected_sha, sys.platform, arch):
         raise RuntimeError("Package identity does not match selected commit/platform/architecture")
+    verify_files(root, manifest)
+    return manifest
+
+
+def verify_files(root, manifest):
+    """Check contents independently of the host platform (also used for releases)."""
+    root = Path(root).resolve()
     expected = manifest["files"]
     actual = {p.relative_to(root).as_posix() for p in root.rglob("*") if p.is_file() and p != root/"manifest.json"}
     if actual != set(expected):
@@ -44,30 +50,36 @@ def verify(root, expected_sha, kind):
         path = (root/name).resolve()
         if not path.is_relative_to(root) or (root/name).is_symlink() or digest(path) != checksum:
             raise RuntimeError(f"Invalid packaged file: {name}")
-    return manifest
 
 
-def archive(root, directory, prefix):
-    root, directory = Path(root), Path(directory)
-    directory.mkdir(parents=True, exist_ok=True)
+def artifact_name(root, prefix):
+    root = Path(root)
     manifest = json.loads((root/"manifest.json").read_text())
-    label = {"win32":"windows", "darwin":"macos"}.get(sys.platform, sys.platform)
+    label = {"win32":"windows", "darwin":"macos"}.get(manifest["platform"], manifest["platform"])
     arch = {"x86_64":"x64", "aarch64":"arm64"}.get(manifest["arch"])
     if arch is None: raise RuntimeError("Unsupported package architecture: "+manifest["arch"])
     stem = f"{label}-{prefix}-{arch}-{manifest['source_sha']}"
-    if sys.platform == "win32":
-        path = directory/(stem+".zip")
-        with zipfile.ZipFile(path, "w", compression=zipfile.ZIP_DEFLATED) as output:
-            for file in sorted(root.rglob("*")):
-                if file.is_file(): output.write(file, file.relative_to(root.parent))
-    else:
-        path = directory/(stem+".tar.gz")
-        with tarfile.open(path, "w:gz", compresslevel=3) as output:
-            output.add(root, arcname=root.name)
-    path.with_name(path.name+".sha256").write_text(f"{digest(path)}  {path.name}\n")
     if os.environ.get("GITHUB_OUTPUT"):
         with open(os.environ["GITHUB_OUTPUT"], "a") as output:
-            output.write(f"artifact_name={stem}\narchive_path={path.as_posix()}\n")
+            output.write(f"artifact_name={stem}\n")
+    return stem
+
+
+def archive(root, directory, prefix):
+    """Create a single ZIP with runtime contents at its root, for release assets."""
+    root, directory = Path(root), Path(directory)
+    directory.mkdir(parents=True, exist_ok=True)
+    manifest = json.loads((root/"manifest.json").read_text())
+    path = directory/(artifact_name(root, prefix)+".zip")
+    with zipfile.ZipFile(path, "w", compression=zipfile.ZIP_DEFLATED) as output:
+        for file in sorted(root.rglob("*")):
+            if file.is_file():
+                info = zipfile.ZipInfo.from_file(file, file.relative_to(root).as_posix())
+                # Artifact downloads reset modes; restore executable entry points.
+                if manifest["platform"] != "win32" and (file.parent == root/"bin" or file.name == manifest.get("launcher")):
+                    info.create_system = 3
+                    info.external_attr = 0o100755 << 16
+                output.writestr(info, file.read_bytes(), compress_type=zipfile.ZIP_DEFLATED)
     print(path)
     return path
 

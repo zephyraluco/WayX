@@ -4,12 +4,14 @@ import json
 import os
 from pathlib import Path
 import platform
+import shutil
 import subprocess
 import sys
 import tempfile
 import unittest
+import zipfile
 from unittest.mock import patch
-from package_support import archive, digest, verify
+from package_support import archive, artifact_name, digest, verify
 from test_fixtures import prebuilt
 
 
@@ -93,13 +95,65 @@ class PackageTests(unittest.TestCase):
         extra.unlink(); self.file.unlink()
         with self.assertRaises(RuntimeError): verify(self.root, self.sha, "runtime")
 
-    def test_archive_uses_requested_name_and_checksum(self):
+    def test_archive_has_flat_contents_without_another_archive_or_checksum(self):
+        binary = self.root/"bin"/"wayx"
+        binary.parent.mkdir()
+        binary.write_bytes(b"runtime binary")
+        self.manifest["files"]["bin/wayx"] = digest(binary)
+        self.save()
         with patch.dict(os.environ, {"GITHUB_OUTPUT":str(Path(self.directory.name)/"outputs")}):
             result = archive(self.root, Path(self.directory.name)/"archives", "core-runtime")
         label = {"win32":"windows", "darwin":"macos"}.get(sys.platform, sys.platform)
         arch = {"x86_64":"x64", "aarch64":"arm64"}[self.manifest["arch"]]
-        self.assertTrue(result.name.startswith(f"{label}-core-runtime-{arch}-{self.sha}."))
-        self.assertEqual(result.with_name(result.name+".sha256").read_text().split()[0], digest(result))
+        self.assertEqual(result.name, f"{label}-core-runtime-{arch}-{self.sha}.zip")
+        self.assertEqual(list(result.parent.iterdir()), [result])
+        with zipfile.ZipFile(result) as bundle:
+            self.assertEqual(set(bundle.namelist()), {"fixture", "manifest.json", "bin/wayx"})
+            self.assertEqual(bundle.read("bin/wayx"), binary.read_bytes())
+            if sys.platform != "win32":
+                self.assertEqual(bundle.getinfo("bin/wayx").external_attr >> 16, 0o100755)
+
+    def test_artifact_name_does_not_create_an_archive(self):
+        with patch.dict(os.environ, {"GITHUB_OUTPUT":str(Path(self.directory.name)/"outputs")}):
+            name = artifact_name(self.root, "core-runtime")
+        self.assertEqual((Path(self.directory.name)/"outputs").read_text(), f"artifact_name={name}\n")
+        self.assertEqual({p.name for p in self.root.iterdir()}, {"fixture", "manifest.json"})
+
+    def test_relocation_is_flat_and_verifies_contents(self):
+        script = Path(__file__).with_name("relocate-runtime.py")
+        output = Path(self.directory.name)/"relocated runtime"
+        command = [sys.executable, str(script), "--runtime", str(self.root), "--output", str(output),
+                   "--expected-sha", self.sha]
+        subprocess.run(command, check=True, capture_output=True)
+        verify(output, self.sha, "runtime")
+        self.assertEqual({p.name for p in output.iterdir()}, {"fixture", "manifest.json"})
+        self.file.write_text("corrupted")
+        shutil.rmtree(output)
+        result = subprocess.run(command, capture_output=True)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertFalse(output.exists())
+
+    def test_release_archives_verify_all_three_platforms(self):
+        packages = Path(self.directory.name)/"packages"
+        packages.mkdir()
+        for platform_name, label in (("linux", "linux"), ("win32", "windows"), ("darwin", "macos")):
+            root = packages/f"{label}-core-runtime-x64-{self.sha}"
+            shutil.copytree(self.root, root)
+            manifest = dict(self.manifest, platform=platform_name, arch="x86_64")
+            (root/"manifest.json").write_text(json.dumps(manifest))
+        output = Path(self.directory.name)/"release-assets"
+        command = [sys.executable, str(Path(__file__).with_name("prepare-release.py")),
+                   "--packages", str(packages), "--output", str(output), "--expected-sha", self.sha]
+        subprocess.run(command, check=True, capture_output=True)
+        self.assertEqual(len(list(output.glob("*.zip"))), 3)
+        for path in output.iterdir():
+            with zipfile.ZipFile(path) as bundle:
+                self.assertEqual(set(bundle.namelist()), {"fixture", "manifest.json"})
+        shutil.rmtree(output)
+        next(packages.glob("*/fixture")).write_text("corrupted")
+        result = subprocess.run(command, capture_output=True)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertFalse(output.exists())
 
     def test_package_mode_never_falls_back_to_a_build(self):
         self.manifest["executables"] = {"ok":"fixture"}; self.save()

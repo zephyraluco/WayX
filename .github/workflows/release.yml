@@ -69,46 +69,21 @@ jobs:
               throw new Error('Require exactly one tested runtime for '+platform);
           }
           core.setOutput('tag',tag); core.setOutput('sha',sha); core.setOutput('run-id',String(integration.id));
+    - uses: actions/checkout@v4
+      with:
+        ref: ${{ steps.source.outputs.sha }}
     - uses: actions/download-artifact@v4
       with:
         pattern: '*-core-runtime-*-${{ steps.source.outputs.sha }}'
         path: packages
-        merge-multiple: true
+        merge-multiple: false
         run-id: ${{ steps.source.outputs.run-id }}
         github-token: ${{ github.token }}
-    - name: Verify release assets
+    - name: Verify runtime contents and prepare release ZIPs
       env:
         SOURCE_SHA: ${{ steps.source.outputs.sha }}
-      run: |
-        python - <<'PYCODE'
-        import hashlib,json,os,tarfile,zipfile
-        from pathlib import Path
-        root=Path('packages')
-        checksums=list(root.glob('*.sha256'))
-        if len(checksums)!=3: raise RuntimeError('Expected three runtime archives')
-        seen=set()
-        for checksum in checksums:
-            expected,name=checksum.read_text().strip().split(None,1)
-            archive=root/name.strip()
-            if archive.parent.resolve()!=root.resolve(): raise RuntimeError('Invalid asset path')
-            with archive.open('rb') as stream:
-                if hashlib.file_digest(stream,'sha256').hexdigest()!=expected: raise RuntimeError('Archive checksum mismatch')
-            if archive.suffix=='.zip':
-                with zipfile.ZipFile(archive) as bundle: manifest=json.loads(bundle.read('runtime/manifest.json'))
-            else:
-                with tarfile.open(archive) as bundle: manifest=json.load(bundle.extractfile('runtime/manifest.json'))
-            platform={'win32':'windows','darwin':'macos','linux':'linux'}.get(manifest['platform'])
-            arch={'x86_64':'x64','aarch64':'arm64'}.get(manifest['arch'])
-            if manifest['source_sha']!=os.environ['SOURCE_SHA'] or manifest['kind']!='runtime' or platform in seen or arch is None:
-                raise RuntimeError('Runtime package identity mismatch')
-            stem=f"{platform}-core-runtime-{arch}-{manifest['source_sha']}"
-            extension='.zip' if platform=='windows' else '.tar.gz'
-            if archive.name!=stem+extension: raise RuntimeError('Runtime asset name mismatch')
-            seen.add(platform)
-        if seen!={'linux','windows','macos'}: raise RuntimeError('Missing platform')
-        if len(list(root.iterdir()))!=6: raise RuntimeError('Unexpected release assets')
-        PYCODE
-    - name: Publish verified runtime archives and checksums
+      run: python scripts/prepare-release.py --packages packages --output release-assets --expected-sha "$SOURCE_SHA"
+    - name: Publish verified runtime ZIPs
       uses: actions/github-script@v7
       env:
         RELEASE_TAG: ${{ steps.source.outputs.tag }}
@@ -124,10 +99,10 @@ jobs:
             name:tag,draft:true,generate_release_notes:true})).data;
           const existing = await github.paginate(github.rest.repos.listReleaseAssets,
             {...context.repo,release_id:release.id,per_page:100});
-          for (const name of fs.readdirSync('packages').sort()) {
+          for (const name of fs.readdirSync('release-assets').sort()) {
             const old = existing.find(asset => asset.name===name);
             if (old) await github.rest.repos.deleteReleaseAsset({...context.repo,asset_id:old.id});
-            const data = fs.readFileSync('packages/'+name);
+            const data = fs.readFileSync('release-assets/'+name);
             await github.rest.repos.uploadReleaseAsset({...context.repo,release_id:release.id,name,data,
               headers:{'content-type':'application/octet-stream','content-length':data.length}});
           }

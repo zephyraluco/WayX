@@ -109,7 +109,7 @@ shutil.copytree(args.runtime/"licenses", out/"licenses")
 shutil.copytree("scripts", out/"scripts", ignore=shutil.ignore_patterns("__pycache__"))
 # Test jobs need no checkout or build source, and cannot fall back to compilation.
 # Only test drivers, the fixture resolver and manifest verifier are shipped.
-keep = {"test-package.py", "test-package-support.py", "test-native.py", "test-idle-cpu.py", "test_fixtures.py", "create-xauthority.py", "package_support.py"}
+keep = {"test-package.py", "test-package-support.py", "test-native.py", "test-idle-cpu.py", "test_fixtures.py", "create-xauthority.py", "package_support.py", "relocate-runtime.py", "prepare-release.py"}
 for path in (out/"scripts").iterdir():
     if path.name not in keep:
         if path.is_dir(): shutil.rmtree(path)
