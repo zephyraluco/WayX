@@ -529,9 +529,27 @@ impl Native {
             return Ok(());
         }
         let previous = self.applied_state;
-        if previous != Some(*state) {
+        let changed = |project: fn(&WindowState) -> u32| {
+            previous.is_none_or(|old| project(&old) != project(state))
+        };
+        if changed(|s| s.flags & window_state::OVERRIDE_REDIRECT) {
             self.window
                 .set_decorations(state.flags & window_state::OVERRIDE_REDIRECT == 0);
+        }
+        let hints_changed = previous.is_none_or(|old| {
+            let mut old = old;
+            let mut current = *state;
+            old.x = 0;
+            old.y = 0;
+            old.flags = 0;
+            old.transient_for = 0;
+            current.x = 0;
+            current.y = 0;
+            current.flags = 0;
+            current.transient_for = 0;
+            old != current
+        });
+        if hints_changed {
             self.window.set_resizable(
                 !(state.min_width != 0
                     && state.max_width == state.min_width
@@ -565,6 +583,8 @@ impl Native {
                     state.width_inc.max(1),
                     state.height_inc.max(1),
                 )));
+        }
+        if changed(|s| s.flags & (window_state::ABOVE | window_state::OVERRIDE_REDIRECT)) {
             self.window.set_window_level(
                 if state.flags & (window_state::ABOVE | window_state::OVERRIDE_REDIRECT) != 0 {
                     winit::window::WindowLevel::AlwaysOnTop
@@ -572,23 +592,22 @@ impl Native {
                     winit::window::WindowLevel::Normal
                 },
             );
-            if previous.is_none_or(|old| (old.flags ^ state.flags) & window_state::MINIMIZED != 0) {
-                self.window
-                    .set_minimized(state.flags & window_state::MINIMIZED != 0);
-            }
-            if previous.is_none_or(|old| (old.flags ^ state.flags) & window_state::MAXIMIZED != 0) {
-                self.window
-                    .set_maximized(state.flags & window_state::MAXIMIZED != 0);
-            }
-            if previous.is_none_or(|old| (old.flags ^ state.flags) & window_state::FULLSCREEN != 0)
-            {
-                self.window.set_fullscreen(
-                    (state.flags & window_state::FULLSCREEN != 0)
-                        .then_some(winit::window::Fullscreen::Borderless(None)),
-                );
-            }
-            self.applied_state = Some(*state);
         }
+        if previous.is_none_or(|old| (old.flags ^ state.flags) & window_state::MINIMIZED != 0) {
+            self.window
+                .set_minimized(state.flags & window_state::MINIMIZED != 0);
+        }
+        if previous.is_none_or(|old| (old.flags ^ state.flags) & window_state::MAXIMIZED != 0) {
+            self.window
+                .set_maximized(state.flags & window_state::MAXIMIZED != 0);
+        }
+        if previous.is_none_or(|old| (old.flags ^ state.flags) & window_state::FULLSCREEN != 0) {
+            self.window.set_fullscreen(
+                (state.flags & window_state::FULLSCREEN != 0)
+                    .then_some(winit::window::Fullscreen::Borderless(None)),
+            );
+        }
+        self.applied_state = Some(*state);
         self.sync_position(state);
         self.sync_geometry(state);
         Ok(())
@@ -694,10 +713,7 @@ impl Native {
         self.config.height = height;
         self.surface.configure(&self.gpu.device, &self.config);
     }
-    fn render(&mut self, fb: &Framebuffer) -> Result<bool> {
-        if self.window.inner_size().width == 0 || self.window.inner_size().height == 0 {
-            return Ok(false);
-        }
+    fn upload(&mut self, fb: &Framebuffer) -> Result<()> {
         if fb.width != self.image.width || fb.height != self.image.height {
             anyhow::ensure!(
                 fb.width <= self.gpu.device.limits().max_texture_dimension_2d
@@ -709,6 +725,12 @@ impl Native {
         self.image.upload(&self.gpu, fb);
         if let Some(preedit) = &self.preedit {
             self.image.overlay(&self.gpu, preedit, self.ime_spot);
+        }
+        Ok(())
+    }
+    fn present(&mut self) -> Result<bool> {
+        if self.window.inner_size().width == 0 || self.window.inner_size().height == 0 {
+            return Ok(false);
         }
         let frame = match self.surface.get_current_texture() {
             Ok(frame) => frame,
@@ -750,13 +772,36 @@ fn resize_input(id: u32, state: &WindowState, width: u32, height: u32, flags: u3
         ..Default::default()
     }
 }
+/// Cheap immutable UI observation; pixel storage stays in Backend.
+struct WindowUpdate {
+    mapped: bool,
+    title: String,
+    geometry: crate::window::GeometrySnapshot,
+    generation: u64,
+    pixel_size: (u32, u32),
+    pixel_revision: u64,
+}
+impl From<&crate::backend::Window> for WindowUpdate {
+    fn from(window: &crate::backend::Window) -> Self {
+        Self {
+            mapped: window.mapped,
+            title: window.title.clone(),
+            geometry: window.geometry,
+            generation: window.geometry_generation,
+            pixel_size: (window.framebuffer.width, window.framebuffer.height),
+            pixel_revision: window.framebuffer.revision,
+        }
+    }
+}
+
 struct App {
     backend: SharedBackend,
     pending_move: Option<InputEvent>,
     wake_pending: Arc<AtomicBool>,
     ui_wake: crate::notify::UiWake,
     selection_watch: Option<crate::selection::ReadinessWatch>,
-    native: HashMap<WindowId, Native>,
+    native: HashMap<u32, Native>,
+    native_ids: HashMap<WindowId, u32>,
     gpu: Option<Arc<SharedGpu>>,
     gpu_retired: Arc<AtomicU64>,
     gpu_retirement_generation: u64,
@@ -918,16 +963,25 @@ impl App {
         if let Some(selection) = &mut self.selection {
             selection.tick()?;
         }
-        let mut backend = self
-            .backend
-            .lock()
-            .map_err(|_| anyhow!("backend mutex poisoned"))?;
+        let (windows, requested_focus) = {
+            let mut backend = self
+                .backend
+                .lock()
+                .map_err(|_| anyhow!("backend mutex poisoned"))?;
+            let windows = backend
+                .windows
+                .iter()
+                .map(|(&id, window)| (id, WindowUpdate::from(window)))
+                .collect::<std::collections::BTreeMap<_, _>>();
+            (windows, backend.requested_focus.take())
+        };
         if let Some(gpu) = &self.gpu {
             gpu.check()?;
         }
         let previous_windows = self.native.len();
         self.native
-            .retain(|_, native| backend.windows.get(&native.id).is_some_and(|w| w.mapped));
+            .retain(|_, native| windows.get(&native.id).is_some_and(|w| w.mapped));
+        self.native_ids.retain(|_, id| self.native.contains_key(id));
         if self.native.len() != previous_windows
             && let Some(gpu) = &self.gpu
         {
@@ -955,43 +1009,40 @@ impl App {
             }
         }
         let mut resized = Vec::new();
-        for window in backend.windows.values() {
+        for (&id, window) in &windows {
+            let geometry = &window.geometry;
             if !window.mapped {
                 continue;
             }
-            if !self.native.values().any(|native| native.id == window.id) {
+            if !self.native.contains_key(&id) {
                 let owner = self
                     .native
-                    .values()
-                    .find(|native| native.id == window.geometry.state.transient_for)
+                    .get(&geometry.state.transient_for)
                     .map(|native| native.window.as_ref());
                 let native = pollster::block_on(Native::new(
                     event_loop,
-                    window.id,
+                    id,
                     &window.title,
-                    &window.geometry,
+                    geometry,
                     owner,
                     &mut self.gpu,
                     &self.ui_wake,
                 ))?;
-                self.native.insert(native.window.id(), native);
+                self.native_ids.insert(native.window.id(), native.id);
+                self.native.insert(native.id, native);
                 if let Some(gpu) = &self.gpu {
                     gpu.report(self.native.len(), "created");
                 }
             }
-            if let Some(native) = self
-                .native
-                .values_mut()
-                .find(|native| native.id == window.id)
-            {
-                native.apply_state(&window.geometry, window.geometry_generation, &window.title)?;
+            if let Some(native) = self.native.get_mut(&id) {
+                native.apply_state(geometry, window.generation, &window.title)?;
                 if let Some((sequence, (width, height))) = native.resize_sync.take_input() {
                     let mut input = resize_input(
                         native.id,
-                        &window.geometry.state,
+                        &geometry.state,
                         width,
                         height,
-                        window.geometry.state.flags,
+                        geometry.state.flags,
                     );
                     input.detail = sequence;
                     resized.push(input);
@@ -999,7 +1050,13 @@ impl App {
             }
         }
         for input in resized {
-            backend.push_input(input)?;
+            let mut backend = self
+                .backend
+                .lock()
+                .map_err(|_| anyhow!("backend mutex poisoned"))?;
+            if backend.windows.contains_key(&input.window) {
+                backend.push_input(input)?;
+            }
         }
         let owners = self
             .native
@@ -1007,7 +1064,7 @@ impl App {
             .map(|native| Ok((native.id, native.x11_id()?)))
             .collect::<Result<HashMap<_, _>>>()?;
         for native in self.native.values_mut() {
-            if let Some(window) = backend.windows.get(&native.id) {
+            if let Some(window) = windows.get(&native.id) {
                 native.sync_transient(
                     owners
                         .get(&window.geometry.state.transient_for)
@@ -1015,10 +1072,9 @@ impl App {
                         .flatten(),
                 )?;
             }
-            if let Some(window) = backend.windows.get(&native.id)
-                && (native.image.revision != window.framebuffer.revision
-                    || native.image.width != window.framebuffer.width
-                    || native.image.height != window.framebuffer.height)
+            if let Some(window) = windows.get(&native.id)
+                && (native.image.revision != window.pixel_revision
+                    || (native.image.width, native.image.height) != window.pixel_size)
                 && !native.occluded
                 && !native.window.is_minimized().unwrap_or(false)
                 && native.retry_at.is_none()
@@ -1026,34 +1082,42 @@ impl App {
                 native.window.request_redraw();
             }
         }
-        if let Some(id) = backend.requested_focus.take()
-            && let Some(native) = self.native.values().find(|native| native.id == id)
+        if let Some(id) = requested_focus
+            && let Some(native) = self.native.get(&id)
             && !native.window.has_focus()
         {
             native.window.focus_window();
         }
         if self.last_clipboard.elapsed() >= Duration::from_millis(250) {
             if let Some(clipboard) = &mut self.clipboard {
-                if self.clipboard_revision != backend.clipboard_revision {
-                    clipboard
-                        .set_text(backend.clipboard.clone())
-                        .context("Write native clipboard")?;
-                    self.clipboard_revision = backend.clipboard_revision;
-                } else if let Ok(text) = clipboard.get_text()
-                    && text != backend.clipboard
-                {
-                    backend.set_clipboard(&text)?;
-                    backend.push_input(InputEvent {
-                        kind: event::CLIPBOARD,
-                        ..Default::default()
-                    })?;
-                    self.clipboard_revision = backend.clipboard_revision;
+                let (revision, text) = {
+                    let backend = self
+                        .backend
+                        .lock()
+                        .map_err(|_| anyhow!("backend mutex poisoned"))?;
+                    (backend.clipboard_revision, backend.clipboard.clone())
+                };
+                if self.clipboard_revision != revision {
+                    clipboard.set_text(text).context("Write native clipboard")?;
+                    self.clipboard_revision = revision;
+                } else if let Ok(text) = clipboard.get_text() {
+                    let mut backend = self
+                        .backend
+                        .lock()
+                        .map_err(|_| anyhow!("backend mutex poisoned"))?;
+                    // Do not overwrite a newer remote selection received during the OS call.
+                    if backend.clipboard_revision == revision && text != backend.clipboard {
+                        backend.set_clipboard(&text)?;
+                        backend.push_input(InputEvent {
+                            kind: event::CLIPBOARD,
+                            ..Default::default()
+                        })?;
+                        self.clipboard_revision = backend.clipboard_revision;
+                    }
                 }
             }
             self.last_clipboard = Instant::now();
         }
-        // X11 replies require the DDX thread to acquire the backend mutex.
-        drop(backend);
         if let Some(ime) = self
             .selection
             .as_ref()
@@ -1210,7 +1274,10 @@ impl ApplicationHandler<()> for App {
         event_loop.set_control_flow(ControlFlow::WaitUntil(deadline));
     }
     fn window_event(&mut self, event_loop: &ActiveEventLoop, window_id: WindowId, ev: WindowEvent) {
-        let Some(native) = self.native.get_mut(&window_id) else {
+        let Some(id) = self.native_ids.get(&window_id) else {
+            return;
+        };
+        let Some(native) = self.native.get_mut(id) else {
             return;
         };
         let id = native.id;
@@ -1307,9 +1374,16 @@ impl ApplicationHandler<()> for App {
                 if native.occluded || native.window.is_minimized().unwrap_or(false) {
                     return;
                 }
-                let mut backend = self.backend.lock().unwrap();
-                if let Some(window) = backend.windows.get_mut(&id) {
-                    match native.render(&window.framebuffer) {
+                let uploaded = {
+                    let mut backend = self.backend.lock().unwrap();
+                    backend.windows.get_mut(&id).map(|window| {
+                        native.upload(&window.framebuffer)?;
+                        window.framebuffer.damage = None;
+                        Ok::<_, anyhow::Error>(())
+                    })
+                };
+                if let Some(uploaded) = uploaded {
+                    match uploaded.and_then(|()| native.present()) {
                         Err(error) => {
                             self.error = Some(error);
                             event_loop.exit();
@@ -1336,7 +1410,6 @@ impl ApplicationHandler<()> for App {
                             }
                         }
                     }
-                    window.framebuffer.damage = None;
                 }
                 return;
             }
@@ -1648,6 +1721,7 @@ pub fn run(
         pending_move: None,
         backend,
         native: HashMap::new(),
+        native_ids: HashMap::new(),
         gpu: None,
         gpu_retired: Arc::new(AtomicU64::new(0)),
         gpu_retirement_generation: 0,
