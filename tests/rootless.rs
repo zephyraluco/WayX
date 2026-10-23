@@ -159,9 +159,9 @@ fn rootless_should_preserve_occluded_pixels_and_independent_windows() -> Result<
             let p = (7 * 100 + 7) * 4;
             a.mapped
                 && b.mapped
-                && a.framebuffer.pixels[..4] == [0, 0, 255, 255]
-                && a.framebuffer.pixels[p..p + 4] == [0, 255, 0, 255]
-                && b.framebuffer.pixels[..4] == [255, 0, 0, 255]
+                && a.framebuffer.pixels[..3] == [0, 0, 255]
+                && a.framebuffer.pixels[p..p + 3] == [0, 255, 0]
+                && b.framebuffer.pixels[..3] == [255, 0, 0]
                 && a.title == "independent A"
         })?;
         ensure!(
@@ -238,7 +238,7 @@ fn rootless_should_preserve_occluded_pixels_and_independent_windows() -> Result<
         wait_for(|| {
             let state = backend.lock().unwrap();
             let p = (32 * 100 + 32) * 4;
-            state.windows[&a].framebuffer.pixels[p..p + 4] == [0x33, 0x22, 0x11, 255]
+            state.windows[&a].framebuffer.pixels[p..p + 3] == [0x33, 0x22, 0x11]
         })?;
         {
             let mut state = backend.lock().unwrap();

@@ -131,8 +131,7 @@ fn xlibre_draw_and_input_roundtrip() -> Result<()> {
             let fb = &b.windows[&1].framebuffer;
             let green = (25 * fb.width as usize + 15) * 4;
             let red = (30 * fb.width as usize + 40) * 4;
-            fb.pixels[green..green + 4] == [0, 255, 0, 255]
-                && fb.pixels[red..red + 4] == [0, 0, 255, 255]
+            fb.pixels[green..green + 3] == [0, 255, 0] && fb.pixels[red..red + 3] == [0, 0, 255]
         })?;
         {
             let mut b = backend.lock().unwrap();
@@ -287,7 +286,7 @@ fn randr_resize_roundtrip(
         let b = backend.lock().unwrap();
         let fb = &b.windows[&1].framebuffer;
         let offset = (460 * fb.width as usize + 620) * 4;
-        fb.pixels.get(offset..offset + 4) == Some(&[0, 255, 0, 255])
+        fb.pixels.get(offset..offset + 3) == Some(&[0, 255, 0])
     })?;
     ensure!(
         conn.randr_set_screen_size(root, 16384, 16384, 1000, 1000)?
@@ -640,7 +639,7 @@ fn monitors_roundtrip(
         let b = backend.lock().unwrap();
         let fb = &b.windows[&1].framebuffer;
         let offset = (40 * fb.width as usize + 360) * 4;
-        fb.pixels.get(offset..offset + 4) == Some(&[255, 0, 0, 255])
+        fb.pixels.get(offset..offset + 3) == Some(&[255, 0, 0])
     })?;
     backend.lock().unwrap().push_input(InputEvent {
         kind: event::MOTION,

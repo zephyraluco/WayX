@@ -39,10 +39,10 @@ impl std::error::Error for Error {}
 pub struct Framebuffer {
     pub width: u32,
     pub height: u32,
-    /// Tightly packed BGRA8, alpha always opaque for XRGB input.
+    /// Tightly packed little-endian BGRX; the unused X byte is preserved.
     pub pixels: Vec<u8>,
     pub revision: u64,
-    pub damage: Option<Rect>,
+    pub damage: crate::damage::Damage,
 }
 impl Framebuffer {
     pub fn new(width: u32, height: u32) -> Result<Self, Error> {
@@ -52,12 +52,7 @@ impl Framebuffer {
             height,
             pixels: vec![0; len],
             revision: 1,
-            damage: Some(Rect {
-                x: 0,
-                y: 0,
-                width,
-                height,
-            }),
+            damage: crate::damage::Damage::full(width, height),
         })
     }
     /// Source contains only the damage rectangle, with an explicit row stride.
@@ -89,24 +84,9 @@ impl Framebuffer {
         for y in 0..rect.height as usize {
             let dst = ((rect.y as usize + y) * self.width as usize + rect.x as usize) * 4;
             self.pixels[dst..dst + row].copy_from_slice(&bytes[y * stride..y * stride + row]);
-            for pixel in self.pixels[dst..dst + row].as_chunks_mut::<4>().0 {
-                pixel[3] = 255;
-            }
         }
         self.revision = self.revision.wrapping_add(1).max(1);
-        self.damage = Some(match self.damage {
-            None => rect,
-            Some(old) => {
-                let x = old.x.min(rect.x);
-                let y = old.y.min(rect.y);
-                Rect {
-                    x,
-                    y,
-                    width: (old.x + old.width).max(rect.x + rect.width) - x,
-                    height: (old.y + old.height).max(rect.y + rect.height) - y,
-                }
-            }
-        });
+        self.damage.add(rect, self.width, self.height);
         Ok(())
     }
 }
@@ -460,9 +440,9 @@ mod tests {
         assert_ne!(backend.windows[&1].framebuffer.revision, original);
     }
     #[test]
-    fn padded_damage_and_opaque_xrgb() {
+    fn padded_damage_preserves_xrgb_bytes() {
         let mut fb = Framebuffer::new(4, 3).unwrap();
-        fb.damage = None;
+        fb.damage.clear();
         let bytes = [1, 2, 3, 0, 9, 9, 9, 9, 4, 5, 6, 0];
         fb.upload(
             Rect {
@@ -475,16 +455,16 @@ mod tests {
             &bytes,
         )
         .unwrap();
-        assert_eq!(&fb.pixels[24..28], &[1, 2, 3, 255]);
-        assert_eq!(&fb.pixels[40..44], &[4, 5, 6, 255]);
+        assert_eq!(&fb.pixels[24..28], &[1, 2, 3, 0]);
+        assert_eq!(&fb.pixels[40..44], &[4, 5, 6, 0]);
         assert_eq!(
-            fb.damage,
-            Some(Rect {
+            fb.damage.rects(),
+            &[Rect {
                 x: 2,
                 y: 1,
                 width: 1,
                 height: 2
-            })
+            }]
         );
     }
     #[test]

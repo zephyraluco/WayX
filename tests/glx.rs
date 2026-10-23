@@ -101,7 +101,7 @@ fn glx_should_render_modern_software_opengl_over_tcp() -> Result<()> {
                         let fb = &window.framebuffer;
                         let (x, y) = if rootless { (32, 32) } else { (52, 52) };
                         let offset = (y * fb.width as usize + x) * 4;
-                        if fb.pixels.get(offset..offset + 4) == Some(&[0, 0, 255, 255]) {
+                        if fb.pixels.get(offset..offset + 3) == Some(&[0, 0, 255]) {
                             break;
                         }
                     }

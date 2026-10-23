@@ -29,3 +29,5 @@ pub mod notify;
 
 #[cfg(feature = "desktop")]
 mod geometry;
+
+pub mod damage;

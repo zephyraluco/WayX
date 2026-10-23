@@ -32,7 +32,7 @@ struct Output { @builtin(position) position: vec4<f32>, @location(0) uv: vec2<f3
     var out:Output; out.position=vec4<f32>(points[index],0.,1.);
     out.uv=vec2<f32>((points[index].x+1.)*0.5, (1.-points[index].y)*0.5); return out;
 }
-@fragment fn fs(in:Output)->@location(0) vec4<f32> { return textureSample(image,image_sampler,in.uv); }
+@fragment fn fs(in:Output)->@location(0) vec4<f32> { return vec4<f32>(textureSample(image,image_sampler,in.uv).rgb, 1.); }
 "#;
 struct Gpu {
     pipelines: std::sync::Mutex<HashMap<wgpu::TextureFormat, Arc<wgpu::RenderPipeline>>>,
@@ -198,6 +198,8 @@ struct Image {
     width: u32,
     height: u32,
     revision: u64,
+    restore_overlay: bool,
+    overlay_rect: Option<Rect>,
 }
 impl Image {
     fn new(gpu: &Gpu, width: u32, height: u32, format: wgpu::TextureFormat) -> Result<Self> {
@@ -239,58 +241,81 @@ impl Image {
             width,
             height,
             revision: 0,
+            restore_overlay: false,
+            overlay_rect: None,
         })
     }
+    fn invalidate_overlay(&mut self) {
+        self.restore_overlay = true;
+    }
     fn upload(&mut self, gpu: &Gpu, fb: &Framebuffer) {
-        if self.revision == fb.revision {
+        if self.revision == fb.revision && !self.restore_overlay {
             return;
         }
-        let rect = if self.revision == 0 {
-            Rect {
-                x: 0,
-                y: 0,
-                width: fb.width,
-                height: fb.height,
-            }
+        let full = [Rect {
+            x: 0,
+            y: 0,
+            width: fb.width,
+            height: fb.height,
+        }];
+        let changed = self.revision != fb.revision;
+        let rects = if self.revision == 0 || (changed && fb.damage.rects().is_empty()) {
+            &full[..]
+        } else if changed {
+            fb.damage.rects()
         } else {
-            fb.damage.unwrap_or(Rect {
-                x: 0,
-                y: 0,
-                width: fb.width,
-                height: fb.height,
-            })
+            &[]
         };
-        let offset = ((rect.y as usize * fb.width as usize) + rect.x as usize) * 4;
-        gpu.queue.write_texture(
-            wgpu::ImageCopyTexture {
-                texture: &self.texture,
-                mip_level: 0,
-                origin: wgpu::Origin3d {
-                    x: rect.x,
-                    y: rect.y,
-                    z: 0,
+        let restore = if self.restore_overlay {
+            self.overlay_rect.take()
+        } else {
+            None
+        };
+        let mut bytes = 0u64;
+        let mut rectangles = 0;
+        for rect in rects.iter().copied().chain(restore) {
+            let offset = ((rect.y as usize * fb.width as usize) + rect.x as usize) * 4;
+            gpu.queue.write_texture(
+                wgpu::ImageCopyTexture {
+                    texture: &self.texture,
+                    mip_level: 0,
+                    origin: wgpu::Origin3d {
+                        x: rect.x,
+                        y: rect.y,
+                        z: 0,
+                    },
+                    aspect: wgpu::TextureAspect::All,
                 },
-                aspect: wgpu::TextureAspect::All,
-            },
-            &fb.pixels[offset..],
-            wgpu::ImageDataLayout {
-                offset: 0,
-                bytes_per_row: Some(fb.width * 4),
-                rows_per_image: Some(fb.height),
-            },
-            wgpu::Extent3d {
-                width: rect.width,
-                height: rect.height,
-                depth_or_array_layers: 1,
-            },
-        );
+                &fb.pixels[offset..],
+                wgpu::ImageDataLayout {
+                    offset: 0,
+                    bytes_per_row: Some(fb.width * 4),
+                    rows_per_image: Some(fb.height),
+                },
+                wgpu::Extent3d {
+                    width: rect.width,
+                    height: rect.height,
+                    depth_or_array_layers: 1,
+                },
+            );
+            bytes += u64::from(rect.width) * u64::from(rect.height) * 4;
+            rectangles += 1;
+        }
+        tracing::trace!(bytes, rectangles, "framebuffer uploaded");
         self.revision = fb.revision;
+        self.restore_overlay = false;
     }
-    fn overlay(&self, gpu: &Gpu, preedit: &crate::preedit::PreeditImage, spot: (i16, i16)) {
+    fn overlay(&mut self, gpu: &Gpu, preedit: &crate::preedit::PreeditImage, spot: (i16, i16)) {
         let width = preedit.width.min(self.width);
         let height = preedit.height.min(self.height);
         let x = (spot.0.max(0) as u32).min(self.width - width);
         let y = (spot.1.max(0) as u32).min(self.height - height);
+        self.overlay_rect = Some(Rect {
+            x,
+            y,
+            width,
+            height,
+        });
         gpu.queue.write_texture(
             wgpu::ImageCopyTexture {
                 texture: &self.texture,
@@ -1132,7 +1157,7 @@ impl App {
                     native.ime_allowed = false;
                     native.composing = false;
                     native.preedit = None;
-                    native.image.revision = 0;
+                    native.image.invalidate_overlay();
                     native.window.request_redraw();
                 }
                 native.ime_context = context;
@@ -1141,12 +1166,12 @@ impl App {
                     native.ime_allowed = allowed;
                     native.composing = false;
                     native.preedit = None;
-                    native.image.revision = 0;
+                    native.image.invalidate_overlay();
                     native.window.request_redraw();
                 }
                 if let Some((x, y)) = cursor {
                     if native.ime_spot != (x, y) {
-                        native.image.revision = 0;
+                        native.image.invalidate_overlay();
                         native.window.request_redraw();
                         native.ime_spot = (x, y);
                     }
@@ -1161,7 +1186,7 @@ impl App {
             }
         }
         for native in self.native.values() {
-            if native.image.revision == 0
+            if (native.image.revision == 0 || native.image.restore_overlay)
                 && !native.occluded
                 && native.retry_at.is_none()
                 && !native.window.is_minimized().unwrap_or(false)
@@ -1377,7 +1402,7 @@ impl ApplicationHandler<()> for App {
                         .filter(|window| window.incarnation == native.incarnation)
                         .map(|window| {
                             native.upload(&window.framebuffer)?;
-                            window.framebuffer.damage = None;
+                            window.framebuffer.damage.clear();
                             Ok::<_, anyhow::Error>(())
                         })
                 };
@@ -1449,7 +1474,7 @@ impl ApplicationHandler<()> for App {
                 if !focus {
                     native.composing = false;
                     native.preedit = None;
-                    native.image.revision = 0;
+                    native.image.invalidate_overlay();
                     native.window.request_redraw();
                     native.pressed_keys.clear();
                     if let Some(ime) = self
@@ -1494,7 +1519,7 @@ impl ApplicationHandler<()> for App {
             WindowEvent::Ime(Ime::Commit(text)) => {
                 native.composing = false;
                 native.preedit = None;
-                native.image.revision = 0;
+                native.image.invalidate_overlay();
                 native.window.request_redraw();
                 if let Some(ime) = self
                     .selection
@@ -1517,7 +1542,7 @@ impl ApplicationHandler<()> for App {
                     Vec::new()
                 };
                 native.preedit = None;
-                native.image.revision = 0;
+                native.image.invalidate_overlay();
                 native.window.request_redraw();
                 if let Some(ime) = self
                     .selection
@@ -1549,7 +1574,7 @@ impl ApplicationHandler<()> for App {
             WindowEvent::Ime(Ime::Disabled) => {
                 native.composing = false;
                 native.preedit = None;
-                native.image.revision = 0;
+                native.image.invalidate_overlay();
                 native.window.request_redraw();
                 if let Some(ime) = self
                     .selection
@@ -1824,7 +1849,7 @@ pub async fn gpu_smoke() -> Result<()> {
     // Verify the IME overlay's BGRA color and edge clipping, then erase it
     // without changing the X11 framebuffer or relying on new remote damage.
     for overlay in [false, true, false] {
-        image.revision = 0;
+        image.invalidate_overlay();
         image.upload(&gpu, &fb);
         if overlay {
             image.overlay(
@@ -1882,7 +1907,7 @@ pub async fn gpu_smoke() -> Result<()> {
         );
     }
     anyhow::ensure!(
-        fb.pixels[12..16] == [255, 255, 255, 255],
+        fb.pixels[12..16] == [255, 255, 255, 0],
         "IME modified remote framebuffer"
     );
     tracing::info!(
