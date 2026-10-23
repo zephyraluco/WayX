@@ -40,6 +40,9 @@ enum Command {
     /// Establish authenticated SSH X11 forwarding to an already running local XLibre server.
     #[cfg(feature = "ssh")]
     Ssh {
+        /// Force one compression algorithm; omitted: zlib@openssh.com, zlib, then none.
+        #[arg(long, value_enum)]
+        compression: Option<wayx::ssh::Compression>,
         #[arg(long)]
         host: String,
         #[arg(long, default_value_t = 22)]
@@ -177,6 +180,7 @@ fn main() -> Result<()> {
         }
         #[cfg(feature = "ssh")]
         Command::Ssh {
+            compression,
             host,
             port,
             user,
@@ -190,6 +194,7 @@ fn main() -> Result<()> {
         } => {
             let code = tokio::runtime::Runtime::new()?.block_on(wayx::ssh::connect(
                 wayx::ssh::Options {
+                    compression,
                     host,
                     port,
                     user,
@@ -260,5 +265,33 @@ mod cli_tests {
         let mut args = ssh_args();
         args.extend(["--key-passphrase-env", "TEST_PASSPHRASE"]);
         assert!(Cli::try_parse_from(args).is_err());
+    }
+    #[test]
+    fn compression_selection_is_optional_and_accepts_only_protocol_names() {
+        let cli = Cli::try_parse_from(ssh_args()).unwrap();
+        assert!(matches!(
+            cli.command,
+            Command::Ssh {
+                compression: None,
+                ..
+            }
+        ));
+        for (name, expected) in [
+            ("zlib@openssh.com", wayx::ssh::Compression::ZlibOpenSsh),
+            ("zlib", wayx::ssh::Compression::Zlib),
+            ("none", wayx::ssh::Compression::None),
+        ] {
+            let mut args = ssh_args();
+            args.extend(["--compression", name]);
+            let cli = Cli::try_parse_from(args).unwrap();
+            assert!(
+                matches!(cli.command, Command::Ssh { compression: Some(actual), .. } if actual == expected)
+            );
+        }
+        for invalid in ["auto", "off", "gzip", "zlib,none"] {
+            let mut args = ssh_args();
+            args.extend(["--compression", invalid]);
+            assert!(Cli::try_parse_from(args).is_err());
+        }
     }
 }

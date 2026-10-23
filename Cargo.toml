@@ -24,7 +24,7 @@ winit = { version = "0.30", optional = true }
 wgpu = { version = "0.20", optional = true }
 pollster = { version = "0.3", optional = true }
 arboard = { version = "3", default-features = false, features = ["wayland-data-control"], optional = true }
-russh = { version = "0.64", default-features = false, features = ["ring", "rsa"], optional = true }
+russh = { version = "0.64", default-features = false, features = ["ring", "rsa", "flate2"], optional = true }
 tokio = { version = "1", features = ["rt-multi-thread", "net", "io-util", "sync", "time"], optional = true }
 rand = { version = "0.8", optional = true }
 rpassword = { version = "7", optional = true }

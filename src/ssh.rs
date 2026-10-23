@@ -23,7 +23,28 @@ pub enum Authentication {
     /// Authenticate with a password; None prompts without echo after host verification.
     Password { password: Option<String> },
 }
+/// An explicitly selected SSH compression algorithm. Omission enables ordered fallback.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, clap::ValueEnum)]
+pub enum Compression {
+    #[value(name = "zlib@openssh.com")]
+    ZlibOpenSsh,
+    #[value(name = "zlib")]
+    Zlib,
+    #[value(name = "none")]
+    None,
+}
+fn compression_algorithms(selection: Option<Compression>) -> &'static [russh::compression::Name] {
+    // russh 0.64 names zlib@openssh.com ZLIB_LEGACY; use the wire names below as tested.
+    use russh::compression::{NONE, ZLIB, ZLIB_LEGACY};
+    match selection {
+        Some(Compression::ZlibOpenSsh) => &[ZLIB_LEGACY],
+        Some(Compression::Zlib) => &[ZLIB],
+        Some(Compression::None) => &[NONE],
+        None => &[ZLIB_LEGACY, ZLIB, NONE],
+    }
+}
 pub struct Options {
+    pub compression: Option<Compression>,
     pub host: String,
     pub port: u16,
     pub user: String,
@@ -172,6 +193,10 @@ pub async fn connect(options: Options) -> Result<u32> {
     rand::rngs::OsRng.fill_bytes(&mut fake_cookie);
     let hex: String = fake_cookie.iter().map(|b| format!("{b:02x}")).collect();
     let config = client::Config {
+        preferred: russh::Preferred {
+            compression: compression_algorithms(options.compression).into(),
+            ..Default::default()
+        },
         keepalive_interval: Some(Duration::from_secs(30)),
         ..Default::default()
     };
@@ -400,5 +425,23 @@ mod tests {
         std::fs::write(&path, [1, 0, 255]).unwrap();
         assert!(xauthority_cookie(&path, 0).is_err());
         std::fs::remove_file(path).unwrap();
+    }
+}
+
+#[cfg(test)]
+mod compression_tests {
+    use super::*;
+    #[test]
+    fn compression_preference_uses_protocol_order_and_exact_overrides() {
+        let names = |selection| {
+            compression_algorithms(selection)
+                .iter()
+                .map(|name| name.as_ref())
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(names(None), ["zlib@openssh.com", "zlib", "none"]);
+        assert_eq!(names(Some(Compression::ZlibOpenSsh)), ["zlib@openssh.com"]);
+        assert_eq!(names(Some(Compression::Zlib)), ["zlib"]);
+        assert_eq!(names(Some(Compression::None)), ["none"]);
     }
 }

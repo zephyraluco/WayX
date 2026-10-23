@@ -175,6 +175,12 @@ rootless 内置窗口管理器取得 `WM_S0` 和 SubstructureRedirect，处理 m
 
 ## SSH X11 forwarding
 
+SSH 默认依次协商 `zlib@openssh.com`（认证后压缩）、`zlib`、`none`，无需额外参数。
+仅需强制特定算法时传入 `--compression zlib@openssh.com`、`--compression zlib`
+或 `--compression none`；显式指定后不自动回退，服务端不支持时连接失败。
+`none` 可用于关闭压缩进行带宽/CPU 对照；实际收益取决于画面内容，SSH 通道解压后
+字节数不等于网卡实际流量。
+
 保持本地 `serve` 运行。远端 sshd 须启用 `X11Forwarding yes` 并安装 `xauth`。本地主机的 `known_hosts` 必须已经通过可信途径记录远端主机公钥。
 
 ```sh

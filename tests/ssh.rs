@@ -102,6 +102,11 @@ impl server::Handler for Remote {
                 let mut response = [0; 12];
                 stream.read_exact(&mut response).await?;
                 ensure!(&response == b"X11 response", "X11 response mismatch");
+                let payload = compression_payload();
+                stream.write_all(&payload).await?;
+                let mut echoed = vec![0; payload.len()];
+                stream.read_exact(&mut echoed).await?;
+                ensure!(echoed == payload, "Large compressed X11 payload mismatch");
                 Ok(())
             }
             .await;
@@ -143,6 +148,13 @@ fn explicit_exec_failure_should_still_fail_after_early_output() -> Result<()> {
     loopback_roundtrip(Scenario::RejectedCommand)
 }
 fn loopback_roundtrip(scenario: Scenario) -> Result<()> {
+    compressed_roundtrip(scenario, None, None)
+}
+fn compressed_roundtrip(
+    scenario: Scenario,
+    compression: Option<wayx::ssh::Compression>,
+    server_algorithm: Option<russh::compression::Name>,
+) -> Result<()> {
     tokio::runtime::Runtime::new()?.block_on(async {
         tokio::time::timeout(Duration::from_secs(20), async {
             let dir = tempfile::tempdir()?;
@@ -189,10 +201,21 @@ fn loopback_roundtrip(scenario: Scenario) -> Result<()> {
                     "Destination did not receive real cookie"
                 );
                 stream.write_all(b"X11 response").await?;
+                let expected = compression_payload();
+                let mut payload = vec![0; expected.len()];
+                stream.read_exact(&mut payload).await?;
+                ensure!(payload == expected, "Forwarded X11 payload mismatch");
+                stream.write_all(&payload).await?;
                 Ok::<_, anyhow::Error>(())
             });
             let config = Arc::new(server::Config {
                 keys: vec![host_key],
+                preferred: russh::Preferred {
+                    compression: server_algorithm
+                        .map(|a| vec![a].into())
+                        .unwrap_or_else(|| russh::Preferred::default().compression),
+                    ..Default::default()
+                },
                 ..Default::default()
             });
             let authorized = identity.public_key().clone();
@@ -216,6 +239,7 @@ fn loopback_roundtrip(scenario: Scenario) -> Result<()> {
                 Ok::<_, anyhow::Error>(())
             });
             let result = wayx::ssh::connect(wayx::ssh::Options {
+                compression,
                 host: "127.0.0.1".into(),
                 port,
                 user: "test".into(),
@@ -237,6 +261,22 @@ fn loopback_roundtrip(scenario: Scenario) -> Result<()> {
                 command: "test-x11".into(),
             })
             .await;
+            if compression.is_some()
+                && server_algorithm == Some(russh::compression::NONE)
+                && compression != Some(wayx::ssh::Compression::None)
+            {
+                let error = result.expect_err("Explicit compression must not fall back");
+                ensure!(
+                    error.chain().any(|cause| matches!(
+                        cause.downcast_ref::<russh::Error>(),
+                        Some(russh::Error::NoCommonAlgo { .. })
+                    )),
+                    "Unexpected error: {error:#}"
+                );
+                destination.abort();
+                remote.abort();
+                return Ok(());
+            }
             if matches!(
                 scenario,
                 Scenario::WrongPassword | Scenario::RejectedCommand
@@ -309,4 +349,49 @@ fn teardown_should_accept_typed_peer_reset_but_reject_truncated_data() {
     assert!(peer_reset_after_completion(&aborted.into()));
     let truncated = russh::Error::IO(std::io::Error::from(std::io::ErrorKind::UnexpectedEof));
     assert!(!peer_reset_after_completion(&truncated.into()));
+}
+
+#[test]
+fn compression_algorithms_forward_real_x11() -> Result<()> {
+    use russh::compression::{NONE, ZLIB, ZLIB_LEGACY};
+    use wayx::ssh::Compression;
+    for (selection, algorithm) in [
+        (None, ZLIB),
+        (None, ZLIB_LEGACY),
+        (None, NONE),
+        (Some(Compression::ZlibOpenSsh), ZLIB_LEGACY),
+        (Some(Compression::Zlib), ZLIB),
+        (Some(Compression::None), NONE),
+    ] {
+        compressed_roundtrip(Scenario::Password, selection, Some(algorithm))?;
+    }
+    Ok(())
+}
+
+#[test]
+fn explicit_compression_must_not_fall_back() -> Result<()> {
+    for algorithm in [
+        wayx::ssh::Compression::ZlibOpenSsh,
+        wayx::ssh::Compression::Zlib,
+    ] {
+        compressed_roundtrip(
+            Scenario::Password,
+            Some(algorithm),
+            Some(russh::compression::NONE),
+        )?;
+    }
+    Ok(())
+}
+
+// Exercise multiple SSH packets with both repetitive pixels and less compressible bytes.
+fn compression_payload() -> Vec<u8> {
+    let mut payload = vec![0x55; 64 * 1024];
+    let mut state = 0x12345678u32;
+    for _ in 0..64 * 1024 {
+        state ^= state << 13;
+        state ^= state >> 17;
+        state ^= state << 5;
+        payload.push(state as u8);
+    }
+    payload
 }
