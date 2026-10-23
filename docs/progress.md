@@ -114,12 +114,12 @@ ABI v5、Rust target、源 SHA 和文件哈希。测试不重新编译产品或�
 本轮本地验收使用 Linux X11 与 Mesa 软件 Vulkan；Windows/macOS 交由相同提交的
 原生 CI 验证，实际 Windows 驱动内存与宿主输入法仍需现场验收。
 
-## 构建与包测试流水线拆分
+## CI/CD 工作流整理
 
-- `ci.yml` 定义三个独立构建和三个独立测试调用；每个 test 仅依赖本平台 build。
-- `build-packages.yml` 编译客户端、核心与 release 测试程序，先上传完整运行包，
-  再上传预编译附件；不运行功能测试。
-- `test-packages.yml` 在无源码检出的新 runner 中校验归档、manifest 与文件哈希，
-  使用含空格路径测试真实包，保留日志和资源采样；支持指定旧 Run ID 手动重测。
-- 取消原来两套工作流对客户端与核心的重复编译；保留 fmt/Clippy、无默认特性、
-  C ABI、协议、GLX/OGRE、XIM、原生 GUI、CPU、几何和 GPU 生命周期覆盖。
+- `test.yml`：checks 执行 Format / Clippy；三个平台测试 job 仅运行 Rust 单元测试。
+- `integration.yml`：三个独立平台 job 执行 Build → Bundle → Test → Upload，
+  从归档解压完整包后测试；夹具只在 runner 本地复用，不上传。
+- 仅上传测试通过的 runtime 和始终尝试保留的 result。
+- `release.yml`：发布版本标签对应、默认分支同一提交已通过验证的三平台运行包，
+  校验归档和 manifest 后复用产物，不重新编译。
+- 保留 SSH、C ABI、协议、GLX/OGRE、XIM、原生 GUI、CPU、几何和 GPU 生命周期覆盖。

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Compile, but never execute, tests and fixtures for a separate package-test job."""
+"""Prepare local precompiled fixtures for bundled-runtime integration tests."""
 import argparse
 import json
 import os
@@ -13,7 +13,8 @@ from package_support import stamp, archive, digest, elf_dependencies
 parser = argparse.ArgumentParser(description=__doc__)
 parser.add_argument("--output", type=Path, required=True)
 parser.add_argument("--runtime", type=Path, required=True)
-parser.add_argument("--archive-dir", type=Path, required=True)
+parser.add_argument("--archive-dir", type=Path)
+parser.add_argument("--integration-only", action="store_true")
 parser.add_argument("--profile", choices=("release", "debug"), default="release")
 args = parser.parse_args()
 out = args.output.resolve()
@@ -46,8 +47,12 @@ def cargo_tests(extra, core_only=False):
     if process.wait() != 0: raise RuntimeError("Test compilation failed")
 
 
-cargo_tests(["--all-targets"])
-cargo_tests(["--no-default-features", "--lib"], core_only=True)
+if args.integration_only:
+    targets = ["xlibre", "rootless", "window_manager", "desktop_layout", "ime", "glx", "native_geometry", "native_gpu", "ssh"]
+    cargo_tests([item for target in targets for item in ("--test", target)])
+else:
+    cargo_tests(["--all-targets"])
+    cargo_tests(["--no-default-features", "--lib"], core_only=True)
 # Existing C ABI coverage is Linux-specific; no test is run during packaging.
 if sys.platform == "linux":
     subprocess.run(["cargo", "build", "--locked", *profile, "--no-default-features", "--lib"], check=True)
@@ -110,4 +115,4 @@ for path in (out/"scripts").iterdir():
         if path.is_dir(): shutil.rmtree(path)
         else: path.unlink()
 stamp(out, "test-kit", profile=args.profile, executables=executables, units=units, runtime_manifest_sha256=digest(args.runtime/"manifest.json"))
-archive(out, args.archive_dir, "core-test-kit")
+if args.archive_dir: archive(out, args.archive_dir, "core-test-kit")

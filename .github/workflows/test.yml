@@ -1,0 +1,61 @@
+name: Test
+'on':
+  push:
+    branches:
+    - '**'
+  pull_request: null
+  workflow_dispatch: null
+permissions:
+  contents: read
+jobs:
+  checks:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+    - uses: actions/checkout@v4
+    - uses: dtolnay/rust-toolchain@stable
+      with:
+        components: rustfmt, clippy
+    - uses: Swatinem/rust-cache@v2
+    - name: Install desktop dependencies
+      run: sudo apt-get update && sudo apt-get install -y libx11-dev libxkbcommon-dev libwayland-dev
+    - name: Format
+      run: cargo fmt --check
+    - name: Clippy
+      run: cargo clippy --locked --all-targets --all-features -- -D warnings
+  test-linux:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+    - uses: actions/checkout@v4
+    - uses: dtolnay/rust-toolchain@stable
+    - uses: Swatinem/rust-cache@v2
+    - name: Install desktop test dependencies
+      run: sudo apt-get update && sudo apt-get install -y libx11-dev libxkbcommon-dev libwayland-dev fonts-dejavu-core
+    - name: Rust tests
+      run: cargo test --locked --lib --bins
+    - name: Core without default features
+      run: cargo test --locked --no-default-features --lib
+  test-windows:
+    runs-on: windows-2022
+    timeout-minutes: 30
+    steps:
+    - uses: actions/checkout@v4
+    - uses: dtolnay/rust-toolchain@stable
+    - uses: Swatinem/rust-cache@v2
+    - uses: ilammy/msvc-dev-cmd@v1
+    - name: Rust tests
+      run: cargo test --locked --lib --bins
+    - name: Core without default features
+      run: cargo test --locked --no-default-features --lib
+  test-macos:
+    runs-on: macos-latest
+    timeout-minutes: 30
+    steps:
+    - uses: actions/checkout@v4
+    - uses: dtolnay/rust-toolchain@stable
+    - uses: Swatinem/rust-cache@v2
+    - name: Rust tests
+      run: cargo test --locked --lib --bins
+    - name: Core without default features
+      run: cargo test --locked --no-default-features --lib

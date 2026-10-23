@@ -65,13 +65,13 @@ WAYX_TEST_CORE="$(cat build/xlibre/wayx-core-path.txt)" \
 
 构建脚本将实际 `.so` / `.dylib` / `.dll` 路径写入 `build/xlibre/wayx-core-path.txt`，`serve --core` 使用该路径。XKB 路径通过原生 pkg-config 获取；`WAYX_XKB_DIR` 与 `WAYX_XKB_BIN_DIR` 可在构建和运行时覆盖。
 
-Windows 使用固定版本 vcpkg 编译 C 依赖，再用 MSYS2 UCRT64 构建协议头、XKB 工具、数据和核心 DLL；Rust 使用 MSVC，通过版本化 C ABI 交互。步骤见 [完整包构建工作流](.github/workflows/build-packages.yml) 与 [Windows 构建脚本](scripts/build-windows-core.sh)。核心 DLL、三项真实 X11 协议测试、Win32/DX12 呈现和含空格目录中的运行包重定位已在原生 CI 通过（提交 `a496bce`，[验证记录](https://github.com/zephyraluco/WayX/actions/runs/39709583993)）。这仍是实验性运行包，逐窗口原生交互及正式发行验收不在此验证范围内。
+Windows 使用固定版本 vcpkg 编译 C 依赖，再用 MSYS2 UCRT64 构建协议头、XKB 工具、数据和核心 DLL；Rust 使用 MSVC，通过版本化 C ABI 交互。步骤见 [完整包构建工作流](.github/workflows/integration.yml) 与 [Windows 构建脚本](scripts/build-windows-core.sh)。核心 DLL、三项真实 X11 协议测试、Win32/DX12 呈现和含空格目录中的运行包重定位已在原生 CI 通过（提交 `a496bce`，[验证记录](https://github.com/zephyraluco/WayX/actions/runs/39709583993)）。这仍是实验性运行包，逐窗口原生交互及正式发行验收不在此验证范围内。
 
 `scripts/bundle-core.py` 整理三平台客户端、核心、动态库依赖、XKB 数据和许可证；Linux 设置相对 RUNPATH，macOS 修正加载路径并使用 ad-hoc 签名，Windows 生成 CMD 启动入口。CI 在新的 runner 中下载、校验并搬移完整包后测试，不使用源码或原构建目录。这是运行包验证，不代表正式安装器或可信发行签名已经完成。
 
 ## macOS 运行包快速连接
 
-从 [WayX packages 构建记录](https://github.com/zephyraluco/WayX/actions/workflows/ci.yml)
+从 [Integration 构建记录](https://github.com/zephyraluco/WayX/actions/workflows/integration.yml)
 下载 `macos-core-runtime-<x64或arm64>-<完整提交SHA>`。
 解压 GitHub Artifact 的 ZIP，再解压里面的同名 `.tar.gz`，进入 `runtime`。
 运行包的二进制架构需与本机兼容，可用 `file bin/wayx` 和 `uname -m` 检查。
@@ -240,23 +240,24 @@ cargo run --locked -- gpu-smoke
 
 ### CI 构建产物下载
 
-[WayX packages](https://github.com/zephyraluco/WayX/actions/workflows/ci.yml) 为 Linux、Windows、macOS
-分别运行独立的「完整包构建 → 包测试」链路。某个平台构建成功立即启动本平台测试，
-不等待其他平台；失败也不取消其他平台。完整包先上传，测试失败仍可下载，保留 7 天。
+[Integration](https://github.com/zephyraluco/WayX/actions/workflows/integration.yml) 的 Linux、Windows、macOS
+三个 job 并行执行 Build → Bundle → Test → Upload，互不等待。测试使用归档解压到
+含空格目录的完整运行包；测试通过后上传 runtime，测试日志与结果始终尝试上传。
+只上传 runtime 和 result，保留 7 天；预编译测试夹具只在当前 runner 本地使用。
 
 产物名称统一为 `<平台>-core-runtime-<x64或arm64>-<完整提交SHA>`；平台为
 `linux`、`windows`、`macos`，架构按实际 Rust 构建目标记录。Windows 包内为同名 ZIP，
 Linux/macOS 为同名 tar.gz，并附 SHA-256 文件；运行目录为 `runtime`。
 Linux 包以 Debian 13 / glibc 2.41 为兼容基线，显示服务与 GPU 驱动由宿主提供。
-macOS 目前使用 runner 的原生架构，不将 x64 包冒充 arm64，也不生成 universal 包。
+macOS 使用 runner 的原生架构，不生成 universal 包。
+测试结果名称为 `<平台>-result-<RunID>-<Attempt>`。
 
-测试附件另命名为 `<平台>-core-test-kit-<架构>-<SHA>`，包含预编译测试、外部客户端
-及驱动脚本，不属于用户运行包。附件绑定运行包 manifest 哈希。测试阶段无源码检出、
-无产品或夹具编译，校验平台/架构/ABI/文件哈希后直接测试下载的包；日志另存为
-`<平台>-package-test-results-<RunID>-<Attempt>`。
+`test.yml` 的 `checks` 执行 Format / Clippy，另外三个平台 job 仅运行 Rust 单元测试，
+包含无默认特性配置。SSH、C ABI、X11 协议与原生 GUI 等集成测试由 `integration.yml` 执行。
 
-如需只重测旧包，在 [Test complete package](https://github.com/zephyraluco/WayX/actions/workflows/test-packages.yml)
-选择 Run workflow，填写平台和原构建 Run ID；可选提交 SHA 用于筛选。
+`release.yml` 在推送 `v*` 标签或手动触发时，复用该标签提交在默认分支已经通过
+Test 和 Integration 的三平台运行包，校验身份与归档哈希后发布运行包及校验文件，
+不重新编译。手动触发需填写已存在的版本标签，可指定 Integration Run ID。
 完整运行包仍为实验性发行，不代表安装器、可信签名或自动更新已完成。
 
 ## 输入法（IME/XIM）

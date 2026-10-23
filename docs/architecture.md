@@ -276,13 +276,19 @@ serve 退出。零窗口启动仍不初始化 GPU；最后一个窗口关闭也�
 
 ## 构建产物与测试边界
 
-三个平台分别调用 build-packages，再由各自的 test-packages 消费产物；没有跨平台
-构建屏障。运行包包含 release 客户端、固定版本核心、XKB 编译器/数据、非系统动态
-依赖、许可证和带文件哈希的 ABI v5 manifest。Linux 以 Debian 13 为构建基线。
-产物主名固定为 `<平台>-core-runtime-<x64/arm64>-<完整提交SHA>`。
+`test.yml` 的 checks 独立执行 Format / Clippy，test-linux、test-windows、test-macos
+仅执行 Rust 单元测试（含无默认特性配置）。
 
-预编译测试附件独立归档并绑定运行包 manifest 的 SHA-256；Rust 测试、C 客户端与
-交互夹具在构建阶段生成。Linux 外部 C 客户端的库使用附件私有 RUNPATH，产品不
-搜索该目录；macOS Xlib 作为独立测试客户端的运行依赖安装。测试 runner 不检出
-源码，不调用 Cargo、C/C++ 编译器，也不重新打包产品。完整包上传成功与测试通过
-是两个状态，测试失败不会撤回构建产物。每个测试命令的日志与 manifest 单独保留。
+`integration.yml` 的 linux、windows、macos 各自在同一 runner 顺序执行
+Build → Bundle → Test → Upload，无跨平台屏障。完整包包含 release 客户端、固定版本
+核心、XKB 编译器/数据、非系统动态依赖、许可证和带文件哈希的 ABI v5 manifest。
+Linux 以 Debian 13 为构建基线。产物名为
+`<平台>-core-runtime-<x64/arm64>-<完整提交SHA>`。
+
+测试夹具在当前 runner 预编译并绑定运行包 manifest 哈希，仅在本地使用。测试阶段
+不调用编译器，校验归档后在含空格目录中运行，清理开发库搜索路径；Windows 还将
+原 SDK 目录移走。Linux 外部客户端使用夹具私有 RUNPATH，产品不搜索该目录。
+仅测试通过后上传 runtime；result 始终尝试上传。GitHub 不上传测试夹具。
+
+`release.yml` 只发布既有、同一提交且已通过 Test 与 Integration 的默认分支运行包；
+解析版本标签、检查三平台产物身份和 SHA-256 后发布，不重新构建。
