@@ -1,13 +1,14 @@
 //! Real rootless desktop coordinates, pointer limits and multi-output layout changes.
+#[path = "support/core.rs"]
+mod core;
 use anyhow::{Context, Result, ensure};
 use std::{
-    ffi::CString,
     sync::{Arc, Mutex},
     time::{Duration, Instant},
 };
 use wayx::{
     backend::{Backend, InputEvent, event},
-    bridge::{API, Api, Handle},
+    bridge::{API, Api},
     layout::{DesktopLayout, MonitorRect},
 };
 use x11rb::{
@@ -42,24 +43,14 @@ fn layout(monitors: &[(i32, i32, u32, u32)]) -> Result<DesktopLayout> {
 #[test]
 #[ignore = "requires built XLibre plugin; set WAYX_TEST_CORE"]
 fn host_desktop_should_cover_pointer_rebase_outputs_and_keep_root_pixels_minimal() -> Result<()> {
-    let path = std::env::var("WAYX_TEST_CORE")?;
     let initial = layout(&[(-1920, 0, 1920, 1080), (0, 0, 1920, 1080)])?;
     let mut initial_backend = Backend::default();
     initial_backend.desktop_layout = Some(initial);
     let backend = Arc::new(Mutex::new(initial_backend));
-    let shared = backend.clone();
-    let worker = std::thread::spawn(move || -> Result<i32> {
-        // SAFETY: trusted plugin and callback handle live through the server run.
-        let library = unsafe { libloading::Library::new(path) }?;
-        let run = unsafe {
-            library.get::<unsafe extern "C" fn(
-                *const Api,
-                *mut Handle,
-                i32,
-                *mut *mut std::ffi::c_char,
-            ) -> i32>(b"wayx_xserver_run\0")
-        }?;
-        let args = [
+    let server = core::CoreServer::start(
+        backend.clone(),
+        Api { ..API },
+        &[
             "XWayX",
             ":193",
             "-wayx-rootless",
@@ -68,15 +59,8 @@ fn host_desktop_should_cover_pointer_rebase_outputs_and_keep_root_pixels_minimal
             "-nolisten",
             "local",
             "-ac",
-        ]
-        .iter()
-        .map(|s| CString::new(*s))
-        .collect::<std::result::Result<Vec<_>, _>>()?;
-        let mut argv: Vec<_> = args.iter().map(|s| s.as_ptr().cast_mut()).collect();
-        argv.push(std::ptr::null_mut());
-        let mut handle = Handle(shared);
-        Ok(unsafe { run(&API, &mut handle, args.len() as i32, argv.as_mut_ptr()) })
-    });
+        ],
+    )?;
     let result = (|| -> Result<()> {
         wait(|| {
             Ok(backend
@@ -277,16 +261,6 @@ fn host_desktop_should_cover_pointer_rebase_outputs_and_keep_root_pixels_minimal
         );
         Ok(())
     })();
-    backend.lock().unwrap().push_input(InputEvent {
-        kind: event::SHUTDOWN,
-        ..Default::default()
-    })?;
-    ensure!(
-        worker
-            .join()
-            .map_err(|_| anyhow::anyhow!("Core worker panicked"))??
-            == 0,
-        "Core failed"
-    );
+    server.finish()?;
     result.context("Host desktop layout integration")
 }

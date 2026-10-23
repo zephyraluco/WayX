@@ -1,7 +1,8 @@
 //! Real redirected-window pixels and independent native-window lifetimes.
-use anyhow::{Context, Result, ensure};
+#[path = "support/core.rs"]
+mod core;
+use anyhow::{Result, ensure};
 use std::{
-    ffi::CString,
     sync::{Arc, Mutex},
     time::{Duration, Instant},
 };
@@ -48,21 +49,15 @@ fn wait_for(mut predicate: impl FnMut() -> bool) -> Result<()> {
 #[test]
 #[ignore = "requires built XLibre plugin; set WAYX_TEST_CORE"]
 fn rootless_should_preserve_occluded_pixels_and_independent_windows() -> Result<()> {
-    let path = std::env::var("WAYX_TEST_CORE").context("Set WAYX_TEST_CORE")?;
     let backend = Arc::new(Mutex::new(Backend::default()));
-    let shared = backend.clone();
-    let worker = std::thread::spawn(move || -> Result<i32> {
-        // SAFETY: trusted plugin remains loaded, and all arguments/handle live until return.
-        let library = unsafe { libloading::Library::new(path) }?;
-        let run = unsafe {
-            library.get::<unsafe extern "C" fn(
-                *const Api,
-                *mut Handle,
-                i32,
-                *mut *mut std::ffi::c_char,
-            ) -> i32>(b"wayx_xserver_run\0")
-        }?;
-        let args = [
+    let server = core::CoreServer::start(
+        backend.clone(),
+        Api {
+            window_title: observe_title,
+            window_geometry: observe_geometry,
+            ..API
+        },
+        &[
             "XWayX",
             ":194",
             "-wayx-rootless",
@@ -78,20 +73,8 @@ fn rootless_should_preserve_occluded_pixels_and_independent_windows() -> Result<
             },
             "tcp",
             "-ac",
-        ]
-        .iter()
-        .map(|s| CString::new(*s))
-        .collect::<std::result::Result<Vec<_>, _>>()?;
-        let mut argv: Vec<_> = args.iter().map(|s| s.as_ptr().cast_mut()).collect();
-        argv.push(std::ptr::null_mut());
-        let mut handle = Handle(shared);
-        let api = Api {
-            window_title: observe_title,
-            window_geometry: observe_geometry,
-            ..API
-        };
-        Ok(unsafe { run(&api, &mut handle, args.len() as i32, argv.as_mut_ptr()) })
-    });
+        ],
+    )?;
     let result = (|| -> Result<()> {
         wait_for(|| backend.lock().unwrap().windows.contains_key(&1))?;
         ensure!(
@@ -329,19 +312,11 @@ fn rootless_should_preserve_occluded_pixels_and_independent_windows() -> Result<
         })?;
         wait_for(|| !backend.lock().unwrap().windows.contains_key(&b))?;
         ensure!(
-            !worker.is_finished(),
+            server.is_running(),
             "Closing one native window terminated the X server"
         );
         Ok(())
     })();
-    backend.lock().unwrap().push_input(InputEvent {
-        kind: event::SHUTDOWN,
-        ..Default::default()
-    })?;
-    wait_for(|| worker.is_finished())?;
-    ensure!(
-        worker.join().expect("XLibre worker panicked")? == 0,
-        "XLibre returned failure"
-    );
+    server.finish()?;
     result
 }

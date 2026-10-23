@@ -1,13 +1,14 @@
 //! Real XLibre protocol -> Pixman/FB -> Damage -> Rust, plus Rust -> X11 input.
+#[path = "support/core.rs"]
+mod core;
 use anyhow::{Context, Result, ensure};
 use std::{
-    ffi::CString,
     sync::{Arc, Mutex},
     time::{Duration, Instant},
 };
 use wayx::{
     backend::{Backend, InputEvent, event},
-    bridge::{API, Api, Handle},
+    bridge::{API, Api},
 };
 use x11rb::{
     connection::Connection,
@@ -27,59 +28,35 @@ fn wait_for(mut ready: impl FnMut() -> bool) -> Result<()> {
 #[test]
 #[ignore = "requires built XLibre plugin; set WAYX_TEST_CORE and run --ignored"]
 fn xlibre_draw_and_input_roundtrip() -> Result<()> {
-    let core =
-        std::env::var("WAYX_TEST_CORE").context("Set WAYX_TEST_CORE to libwayx-xserver.so")?;
     let display = std::env::var("WAYX_TEST_DISPLAY").unwrap_or_else(|_| ":191".into());
     let backend = Arc::new(Mutex::new(Backend::default()));
-    let shared = backend.clone();
-    let display_arg = display.clone();
     let monitors = std::env::var_os("WAYX_TEST_MONITORS").is_some();
-    let worker = std::thread::spawn(move || -> Result<i32> {
-        let library = unsafe { libloading::Library::new(core) }?;
-        let run = unsafe {
-            library.get::<unsafe extern "C" fn(
-                *const Api,
-                *mut Handle,
-                i32,
-                *mut *mut std::ffi::c_char,
-            ) -> i32>(b"wayx_xserver_run\0")
-        }?;
-        let mut args: Vec<_> = [
-            "XWayX",
-            &display_arg,
-            "-screen",
-            "0",
-            "320x240x24",
-            "-crtcs",
-            "1@320x240",
-            if cfg!(windows) {
-                "-listen"
-            } else {
-                "-nolisten"
-            },
-            "tcp",
-            "+iglx",
-            "-ac",
-        ]
-        .iter()
-        .map(|s| CString::new(*s).unwrap())
-        .collect();
-        if monitors {
-            args.extend(
-                [
-                    "-wayx-monitor",
-                    "320x240+0+0",
-                    "-wayx-monitor",
-                    "320x240+320+0",
-                ]
-                .map(|s| CString::new(s).unwrap()),
-            );
-        }
-        let mut pointers: Vec<_> = args.iter().map(|s| s.as_ptr().cast_mut()).collect();
-        pointers.push(std::ptr::null_mut());
-        let mut handle = Handle(shared);
-        Ok(unsafe { run(&API, &mut handle, args.len() as i32, pointers.as_mut_ptr()) })
-    });
+    let mut arguments = vec![
+        "XWayX",
+        &display,
+        "-screen",
+        "0",
+        "320x240x24",
+        "-crtcs",
+        "1@320x240",
+        if cfg!(windows) {
+            "-listen"
+        } else {
+            "-nolisten"
+        },
+        "tcp",
+        "+iglx",
+        "-ac",
+    ];
+    if monitors {
+        arguments.extend([
+            "-wayx-monitor",
+            "320x240+0+0",
+            "-wayx-monitor",
+            "320x240+320+0",
+        ]);
+    }
+    let server = core::CoreServer::start(backend.clone(), Api { ..API }, &arguments)?;
     let outcome = (|| -> Result<()> {
         wait_for(|| backend.lock().unwrap().windows.contains_key(&1))?;
         let client_display = if cfg!(windows) {
@@ -200,19 +177,7 @@ fn xlibre_draw_and_input_roundtrip() -> Result<()> {
         conn.destroy_window(win)?.check()?;
         Ok(())
     })();
-    backend.lock().unwrap().push_input(InputEvent {
-        kind: event::SHUTDOWN,
-        ..Default::default()
-    })?;
-    let deadline = Instant::now() + Duration::from_secs(5);
-    while !worker.is_finished() && Instant::now() < deadline {
-        std::thread::sleep(Duration::from_millis(10));
-    }
-    ensure!(worker.is_finished(), "XLibre did not shut down");
-    ensure!(
-        worker.join().expect("XLibre worker panic")? == 0,
-        "XLibre failed"
-    );
+    server.finish()?;
     outcome
 }
 

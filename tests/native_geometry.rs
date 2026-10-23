@@ -1,4 +1,6 @@
 //! Interactive real X11 client driven by the native Windows/Linux geometry harness.
+#[path = "support/x11.rs"]
+mod x11;
 use anyhow::{Context, Result, ensure};
 use std::{
     io::{BufRead, Write},
@@ -11,7 +13,7 @@ use std::{
 use x11rb::{
     connection::Connection,
     protocol::{Event, xproto::*},
-    rust_connection::{DefaultStream, RustConnection},
+    rust_connection::RustConnection,
     wrapper::ConnectionExt as _,
 };
 
@@ -177,20 +179,7 @@ fn stable_position(conn: &RustConnection, window: u32, x: i16, y: i16, millis: u
 #[test]
 #[ignore = "driven by scripts/test-idle-cpu.py --geometry against a native server"]
 fn native_geometry_client() -> Result<()> {
-    let display: u16 = std::env::var("WAYX_GEOMETRY_DISPLAY")?.parse()?;
-    let auth = std::path::PathBuf::from(std::env::var("WAYX_GEOMETRY_AUTH")?);
-    let cookie = wayx::auth::xauthority_cookie(&auth, display)?;
-    let stream = DefaultStream::from_tcp_stream(std::net::TcpStream::connect((
-        std::net::Ipv4Addr::LOCALHOST,
-        6000 + display,
-    ))?)?
-    .0;
-    let conn = RustConnection::connect_to_stream_with_auth_info(
-        stream,
-        0,
-        b"MIT-MAGIC-COOKIE-1".to_vec(),
-        cookie.to_vec(),
-    )?;
+    let conn = x11::connect_native()?;
     let conn = Arc::new(conn);
     let root = conn.setup().roots[0].root;
     let window = conn.generate_id()?;

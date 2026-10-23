@@ -1,34 +1,16 @@
 //! Interactive X11 windows driven by the native GPU lifetime regression harness.
+#[path = "support/x11.rs"]
+mod x11;
 use anyhow::{Result, ensure};
 use std::{
     io::{BufRead, Write},
     time::{Duration, Instant},
 };
-use x11rb::{
-    connection::Connection,
-    protocol::xproto::*,
-    rust_connection::{DefaultStream, RustConnection},
-    wrapper::ConnectionExt as _,
-};
+use x11rb::{connection::Connection, protocol::xproto::*, wrapper::ConnectionExt as _};
 #[test]
 #[ignore = "driven by scripts/test-idle-cpu.py --gpu-cycles against a native server"]
 fn native_gpu_client() -> Result<()> {
-    let display: u16 = std::env::var("WAYX_GEOMETRY_DISPLAY")?.parse()?;
-    let cookie = wayx::auth::xauthority_cookie(
-        &std::path::PathBuf::from(std::env::var("WAYX_GEOMETRY_AUTH")?),
-        display,
-    )?;
-    let stream = DefaultStream::from_tcp_stream(std::net::TcpStream::connect((
-        std::net::Ipv4Addr::LOCALHOST,
-        6000 + display,
-    ))?)?
-    .0;
-    let conn = RustConnection::connect_to_stream_with_auth_info(
-        stream,
-        0,
-        b"MIT-MAGIC-COOKIE-1".to_vec(),
-        cookie.to_vec(),
-    )?;
+    let conn = x11::connect_native()?;
     let root = conn.setup().roots[0].root;
     let mut windows = Vec::new();
     println!("GPU READY");
