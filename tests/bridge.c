@@ -8,7 +8,11 @@ int main(void) {
     assert(sizeof(WayxInputEvent)==64);
     assert(sizeof(WayxWindowState)==64);
     assert(sizeof(WayxGeometrySnapshot)==80);
+    assert(sizeof(WayxDesktopLayout)==276);
     WayxBackend *b=wayx_backend_new();
+    WayxDesktopLayout desktop={0};
+    assert(api->desktop_layout(b,&desktop)==0);
+    assert(api->desktop_layout(b,NULL)<0);
     assert(api->window_create(b,1,0,4,3)==0);
     assert(api->window_create(b,1,0,4,3)<0);
     WayxWindowState state={0};state.min_width=20;state.min_height=10;state.width_inc=8;

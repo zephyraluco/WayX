@@ -90,8 +90,7 @@ with tempfile.TemporaryDirectory(prefix="wayx-native-") as temp:
                 subprocess.run(["cc", "-std=c11", "-D_POSIX_C_SOURCE=200809L", "-Wall", "-Wextra", "-Werror",
                                 "tests/native-rootless.c", *flags, "-o", str(client)], check=True)
                 rootless = subprocess.Popen([binary, "serve", "--rootless", "--core", str(args.core.resolve()),
-                                             "--", f":{core_display}", "-screen", "0", "1280x800x24",
-                                             "-wayx-monitor", "640x800+0+0", "-wayx-monitor", "640x800+640+0",
+                                             "--", f":{core_display}",
                                              "-nolisten", "tcp", "-auth", str(auth)], env=env)
                 try:
                     client_env = env.copy()
@@ -136,7 +135,10 @@ with tempfile.TemporaryDirectory(prefix="wayx-native-") as temp:
                         command = [binary, "serve", "--core", str(args.core.resolve())]
                         if rootless_mode:
                             command.append("--rootless")
-                        command += ["--", f":{core_display}", "-screen", "0", "1280x800x24", "-crtcs", "1@1280x800", "-nolisten", "tcp", "-auth", str(auth)]
+                        command += ["--", f":{core_display}"]
+                        if not rootless_mode:
+                            command += ["-screen", "0", "1280x800x24", "-crtcs", "1@1280x800"]
+                        command += ["-nolisten", "tcp", "-auth", str(auth)]
                         idle = subprocess.Popen(command, env=idle_env, stdout=output, stderr=output)
                         client = None
                         try:
@@ -189,6 +191,12 @@ with tempfile.TemporaryDirectory(prefix="wayx-native-") as temp:
                             if code != 0:
                                 raise RuntimeError(f"Idle server failed: {idle_log.read_text()}")
                     print(f"Idle rootless={rootless_mode}: zero extra presents; damage woke rendering.")
+            if args.core:
+                conflict = subprocess.run([binary, "serve", "--rootless", "--core", str(args.core.resolve()),
+                                           "--", f":{core_display}", "-screen", "0", "64x64x24", "-crtcs", "1@64x64", "-nolisten", "tcp", "-ac"],
+                                          env=env, capture_output=True, text=True, timeout=5)
+                if conflict.returncode == 0 or "conflict with the host desktop" not in conflict.stdout + conflict.stderr:
+                    raise RuntimeError("Rootless conflicting screen options did not fail clearly: " + conflict.stdout + conflict.stderr)
             failed = subprocess.run([binary, "serve", "--rootless", "--core", str(Path(temp) / "missing-core")], env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=5)
             if failed.returncode == 0:
                 raise RuntimeError("Missing core did not fail")

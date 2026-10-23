@@ -662,8 +662,55 @@ struct App {
     selection: Option<crate::selection::SelectionBridge>,
     selection_config: Option<(u16, std::path::PathBuf)>,
     worker: Option<std::thread::JoinHandle<Result<i32>>>,
+    layout_ready: Option<std::sync::mpsc::Sender<()>>,
+    layout_dirty: Arc<AtomicBool>,
+    #[cfg(not(target_os = "windows"))]
+    next_layout_check: Instant,
+    #[cfg(all(unix, not(target_os = "macos")))]
+    host_layout_watch: Option<HostLayoutWatch>,
 }
 impl App {
+    fn update_host_layout(&mut self, event_loop: &ActiveEventLoop) -> Result<()> {
+        if !self.rootless {
+            return Ok(());
+        }
+        let monitors = event_loop
+            .available_monitors()
+            .map(|m| {
+                let position = m.position();
+                let size = m.size();
+                crate::layout::MonitorRect {
+                    x: position.x,
+                    y: position.y,
+                    width: size.width,
+                    height: size.height,
+                }
+            })
+            .collect();
+        let layout = crate::layout::DesktopLayout::new(monitors).context(
+            "Host desktop exceeds the supported dimensions or 256 MiB framebuffer limit",
+        )?;
+        let mut backend = self
+            .backend
+            .lock()
+            .map_err(|_| anyhow!("backend mutex poisoned"))?;
+        if backend.desktop_layout != Some(layout) {
+            backend.desktop_layout = Some(layout);
+            if self.layout_ready.is_none() {
+                backend.push_input(InputEvent {
+                    kind: event::DESKTOP,
+                    ..Default::default()
+                })?;
+            }
+            tracing::info!(?layout, "host desktop layout detected");
+        }
+        if let Some(ready) = self.layout_ready.take() {
+            ready
+                .send(())
+                .context("XLibre worker stopped before desktop initialization")?;
+        }
+        Ok(())
+    }
     fn input(&mut self, input: InputEvent) {
         if input.kind == event::MOVE {
             if self
@@ -932,6 +979,24 @@ impl ApplicationHandler<()> for App {
         self.wake_pending.store(false, Ordering::Release);
     }
     fn resumed(&mut self, event_loop: &ActiveEventLoop) {
+        if let Err(error) = self.update_host_layout(event_loop) {
+            self.layout_ready.take();
+            self.error = Some(error);
+            event_loop.exit();
+            return;
+        }
+        #[cfg(all(unix, not(target_os = "macos")))]
+        if self.rootless
+            && self.host_layout_watch.is_none()
+            && std::env::var_os("WAYLAND_DISPLAY").is_none()
+        {
+            match HostLayoutWatch::new(self.ui_wake.clone()) {
+                Ok(watch) => self.host_layout_watch = Some(watch),
+                Err(error) => {
+                    tracing::warn!(%error,"host RandR notifications unavailable; using layout compatibility check")
+                }
+            }
+        }
         self.clipboard = match arboard::Clipboard::new() {
             Ok(c) => Some(c),
             Err(e) => {
@@ -946,6 +1011,35 @@ impl ApplicationHandler<()> for App {
     }
     fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
         self.flush_move();
+        let mut layout_changed = self.layout_dirty.swap(false, Ordering::AcqRel);
+        #[cfg(all(unix, not(target_os = "macos")))]
+        if let Some(watch) = &self.host_layout_watch {
+            match watch.changed() {
+                Ok(changed) => layout_changed |= changed,
+                Err(error) => {
+                    self.error = Some(error);
+                    event_loop.exit();
+                    return;
+                }
+            }
+        }
+        // winit exposes no portable global monitor-change notification. X11
+        // and Windows use native notifications; other backends have a bounded
+        // compatibility check independent of window movement or rendering.
+        #[cfg(not(target_os = "windows"))]
+        if self.rootless && Instant::now() >= self.next_layout_check {
+            #[cfg(all(unix, not(target_os = "macos")))]
+            let fallback = self.host_layout_watch.is_none();
+            #[cfg(not(all(unix, not(target_os = "macos"))))]
+            let fallback = true;
+            layout_changed |= fallback;
+            self.next_layout_check = Instant::now() + Duration::from_secs(1);
+        }
+        if layout_changed && let Err(error) = self.update_host_layout(event_loop) {
+            self.error = Some(error);
+            event_loop.exit();
+            return;
+        }
         if self.error.is_some() {
             event_loop.exit();
             return;
@@ -1049,6 +1143,10 @@ impl ApplicationHandler<()> for App {
                 input.detail = sequence;
                 input.x = position.0 as f64;
                 input.y = position.1 as f64;
+            }
+            WindowEvent::ScaleFactorChanged { .. } => {
+                self.layout_dirty.store(true, Ordering::Release);
+                return;
             }
             WindowEvent::Occluded(occluded) => {
                 native.occluded = occluded;
@@ -1370,7 +1468,9 @@ pub fn run(
     worker: Option<std::thread::JoinHandle<Result<i32>>>,
     selection_config: Option<(u16, std::path::PathBuf)>,
     frame_limit: Option<u32>,
+    layout_ready: Option<std::sync::mpsc::Sender<()>>,
 ) -> Result<()> {
+    let layout_dirty = Arc::new(AtomicBool::new(false));
     let event_loop = EventLoop::<()>::with_user_event().build()?;
     let proxy = event_loop.create_proxy();
     let wake_pending = Arc::new(AtomicBool::new(false));
@@ -1380,6 +1480,15 @@ pub fn run(
             pending.store(false, Ordering::Release);
         }
     });
+    #[cfg(target_os = "windows")]
+    let _host_display_watch = if rootless {
+        Some(crate::layout_windows::Watch::new(
+            layout_dirty.clone(),
+            ui_wake.clone(),
+        )?)
+    } else {
+        None
+    };
     backend
         .lock()
         .map_err(|_| anyhow!("backend mutex poisoned"))?
@@ -1403,8 +1512,15 @@ pub fn run(
         selection: None,
         selection_config,
         worker,
+        layout_ready,
+        layout_dirty,
+        #[cfg(not(target_os = "windows"))]
+        next_layout_check: Instant::now() + Duration::from_secs(1),
+        #[cfg(all(unix, not(target_os = "macos")))]
+        host_layout_watch: None,
     };
     let event_result = event_loop.run_app(&mut app);
+    app.layout_ready.take();
     // Close the internal selection client, then request orderly server teardown.
     app.selection_watch.take();
     app.selection.take();
@@ -1540,6 +1656,49 @@ pub async fn gpu_smoke() -> Result<()> {
         "GPU texture upload, IME overlay/restore, shader composition and readback passed"
     );
     Ok(())
+}
+
+#[cfg(all(unix, not(target_os = "macos")))]
+struct HostLayoutWatch {
+    // Drop the watcher before releasing its connection.
+    watch: crate::selection::ReadinessWatch,
+    conn: Arc<x11rb::rust_connection::RustConnection>,
+}
+#[cfg(all(unix, not(target_os = "macos")))]
+impl HostLayoutWatch {
+    fn new(wake: crate::notify::UiWake) -> Result<Self> {
+        use x11rb::{
+            connection::Connection,
+            protocol::randr::{ConnectionExt, NotifyMask},
+        };
+        let (conn, screen) = x11rb::connect(None)?;
+        conn.randr_query_version(1, 5)?.reply()?;
+        conn.randr_select_input(
+            conn.setup().roots[screen].root,
+            NotifyMask::SCREEN_CHANGE
+                | NotifyMask::CRTC_CHANGE
+                | NotifyMask::OUTPUT_CHANGE
+                | NotifyMask::RESOURCE_CHANGE,
+        )?
+        .check()?;
+        let conn = Arc::new(conn);
+        let watch = crate::selection::ReadinessWatch::new(conn.clone(), wake)?;
+        watch.arm()?;
+        Ok(Self { watch, conn })
+    }
+    fn changed(&self) -> Result<bool> {
+        use x11rb::{connection::Connection, protocol::Event};
+        self.watch.pause()?;
+        let mut changed = false;
+        while let Some(event) = self.conn.poll_for_event()? {
+            changed |= matches!(
+                event,
+                Event::RandrScreenChangeNotify(_) | Event::RandrNotify(_)
+            );
+        }
+        self.watch.arm()?;
+        Ok(changed)
+    }
 }
 
 #[cfg(test)]

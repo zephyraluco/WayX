@@ -37,6 +37,10 @@ extern const char *XkbBaseDirectory, *XkbBinDirectory;
 #ifdef HAVE_SETITIMER
 extern Bool SmartScheduleSignalEnable;
 #endif
+static WayxDesktopLayout host_layout;
+static Bool host_layout_active,layout_applying;
+static int32_t desktop_origin_x,desktop_origin_y;
+static Bool root_geometry_pending=TRUE;
 #include "wayx-rootless.h"
 #include "wayx-randr.h"
 #include "wayx-signal.h"
@@ -45,6 +49,7 @@ extern Bool SmartScheduleSignalEnable;
  * DISPLAY screens. Coordinates are in the shared desktop framebuffer. */
 static vfbCrtcInfo monitors[16];
 static unsigned monitor_count;
+static Bool explicit_screen,explicit_crtcs;
 static Bool monitor_argument(const char *text,vfbCrtcInfoPtr monitor) {
     long values[4];const char separators[]={'x','+','+','\0'};
     for (unsigned i=0;i<4;i++) {
@@ -61,6 +66,8 @@ static Bool monitor_argument(const char *text,vfbCrtcInfoPtr monitor) {
 }
 
 int ddxProcessArgument(int argc,char **argv,int index) {
+    if (!strcmp(argv[index],"-screen")) explicit_screen=TRUE;
+    if (!strcmp(argv[index],"-crtcs")) explicit_crtcs=TRUE;
     if (!strcmp(argv[index],"-wayx-rootless")) {rootless=TRUE;return 1;}
     if (!strcmp(argv[index],"-wayx-monitor")) {
         if (index+1>=argc || monitor_count>=16 || !monitor_argument(argv[index+1],&monitors[monitor_count]))
@@ -123,7 +130,6 @@ static int configure_native_window(WindowPtr window,Mask mask,XID *values) {
     return ConfigureWindow(window,mask,values,manager);
 }
 static uint32_t root_resize_ack;
-static Bool root_geometry_pending=TRUE;
 static unsigned int root_width,root_height;
 static void flush_backend(void) {
     WayxInputEvent event;
@@ -135,8 +141,8 @@ static void flush_backend(void) {
         switch (event.kind) {
         case WAYX_MOTION: {
             ValuatorMask *mask=valuator_mask_new(2);
-            valuator_mask_set_double(mask,0,event.x+(target?target->drawable.x:0));
-            valuator_mask_set_double(mask,1,event.y+(target?target->drawable.y:0));
+            valuator_mask_set_double(mask,0,event.x+(target?target->drawable.x:(rootless?-(double)desktop_origin_x:0)));
+            valuator_mask_set_double(mask,1,event.y+(target?target->drawable.y:(rootless?-(double)desktop_origin_y:0)));
             QueuePointerEvents(wayx_pointer,MotionNotify,0,POINTER_ABSOLUTE|POINTER_SCREEN,mask);
             valuator_mask_free(&mask);break;
         }
@@ -184,9 +190,13 @@ static void flush_backend(void) {
                 }
             }
             break;
+        case WAYX_DESKTOP:
+            if (rootless) apply_host_layout();
+            break;
         case WAYX_MOVE:
-            if(target && event.x>=-32768 && event.x<=32767 && event.y>=-32768 && event.y<=32767) {
-                int32_t x=event.x,y=event.y;
+            if(target && event.x-desktop_origin_x>=-32768 && event.x-desktop_origin_x<=32767 &&
+                event.y-desktop_origin_y>=-32768 && event.y-desktop_origin_y<=32767) {
+                int32_t x=event.x-desktop_origin_x,y=event.y-desktop_origin_y;
                 /* Even an unchanged/rejected request needs a final geometry ack. */
                 metadata_dirty=TRUE;
                 if (target->drawable.x-target->borderWidth!=x || target->drawable.y-target->borderWidth!=y) {
@@ -214,9 +224,10 @@ static void flush_backend(void) {
         }
     }
     if (rootless && screen->root) sync_rootless_windows();
-    if (!rootless && (root_geometry_pending || root_width!=screen->width || root_height!=screen->height)) {
+    if (root_geometry_pending || root_width!=screen->width || root_height!=screen->height) {
         WayxGeometrySnapshot geometry={0};
         geometry.width=screen->width;geometry.height=screen->height;
+        geometry.state.x=desktop_origin_x;geometry.state.y=desktop_origin_y;
         geometry.resize_ack=root_resize_ack;
         if (api->window_geometry(backend,1,&geometry)<0) FatalError("WayX root geometry rejected\n");
         root_width=screen->width;root_height=screen->height;root_geometry_pending=FALSE;
@@ -264,8 +275,9 @@ static void attach_screen(CallbackListPtr *list,void *closure,void *data) {
     if (screen->myNum!=0 || fb->bitsPerPixel!=32 || fb->depth!=24)
         FatalError("WayX currently requires one depth-24, 32-bpp screen\n");
     rrGetScrPriv(screen)->rrScreenSetSize=wayx_screen_size;
+    if (rootless) rrGetScrPriv(screen)->rrCrtcSet=reject_rootless_crtc;
     RRScreenSetSizeRange(screen,1,1,16384,16384);
-    if (api->window_create(backend,1,0,screen->width,screen->height)<0)
+    if (api->window_create(backend,1,0,rootless?1:screen->width,rootless?1:screen->height)<0)
         FatalError("WayX failed to create root display\n");
     const char title[]="WayX — XLibre desktop";
     api->window_title(backend,1,(const uint8_t*)title,sizeof(title)-1);
@@ -294,6 +306,29 @@ void InitOutput(int argc,char **argv) {
 #ifdef GLXEXT
     wayx_glx_init();
 #endif
+    if (rootless) {
+        int available=api->desktop_layout(backend,&host_layout);
+        if (available<0) FatalError("WayX: invalid host desktop layout\n");
+        if (available) {
+            vfbScreenInfoPtr fb=vfbNumScreens?&vfbScreens[0]:&defaultScreenInfo;
+            if ((explicit_screen && (fb->width!=host_layout.width || fb->height!=host_layout.height || fb->depth!=24)) ||
+                (explicit_crtcs && fb->numCrtcs!=(int)host_layout.count))
+                FatalError("WayX rootless: -screen/-crtcs conflict with the host desktop; omit them for automatic layout\n");
+            vfbCrtcInfo normalized[WAYX_MAX_MONITORS];memset(normalized,0,sizeof(normalized));
+            for (unsigned i=0;i<host_layout.count;i++) {
+                WayxMonitorRect m=host_layout.monitors[i];
+                normalized[i]=(vfbCrtcInfo){.width=m.width,.height=m.height,.x=m.x-host_layout.origin_x,.y=m.y-host_layout.origin_y,.numOutputs=1};
+                if (explicit_crtcs && (fb->crtcs[i].width!=normalized[i].width || fb->crtcs[i].height!=normalized[i].height ||
+                    fb->crtcs[i].x!=normalized[i].x || fb->crtcs[i].y!=normalized[i].y))
+                    FatalError("WayX rootless: -crtcs conflicts with the host monitors\n");
+            }
+            if (monitor_count && (monitor_count!=host_layout.count || memcmp(monitors,normalized,monitor_count*sizeof(monitors[0]))))
+                FatalError("WayX rootless: -wayx-monitor conflicts with the host monitors\n");
+            monitor_count=host_layout.count;memcpy(monitors,normalized,sizeof(normalized));
+            desktop_origin_x=host_layout.origin_x;desktop_origin_y=host_layout.origin_y;
+            host_layout_active=TRUE;
+        }
+    }
     if (monitor_count) {
         vfbScreenInfoPtr fb=vfbNumScreens?&vfbScreens[0]:&defaultScreenInfo;
         unsigned width=0,height=0;

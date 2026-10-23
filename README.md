@@ -91,7 +91,7 @@ if [ ! -e Xauthority ]; then
     xxd -r -p > Xauthority
   unset cookie
 fi
-./wayx.sh --rootless -- :100 -screen 0 1280x800x24 -crtcs 1@1280x800 \
+./wayx.sh --rootless -- :100 \
   -nolisten tcp -auth "$PWD/Xauthority"
 ```
 
@@ -160,18 +160,18 @@ DISPLAY=:100 XAUTHORITY=$PWD/.cache/Xauthority xterm
 
 ## Rootless：每个 X11 顶层窗口独立显示
 
-在上述 `serve` 命令的 `--` 之前添加 `--rootless`：
+使用 `--rootless`，省略手工屏幕尺寸与 CRTC 参数，自动采用宿主显示器布局：
 
 ```sh
 cargo run --locked -- serve --rootless --core build/xlibre/hw/wayx/libwayx-xserver.so -- \
-  :100 -screen 0 1280x800x24 -crtcs 1@1280x800 -auth .cache/Xauthority -nolisten tcp
+  :100 -auth .cache/Xauthority -nolisten tcp
 ```
 
 顶层窗口使用 XLibre Composite 的独立 Pixmap，因此互相遮挡也能保留正确像素；嵌套子窗口合成到所属顶层窗口。支持标题更新、映射/隐藏、窗口销毁和客户端尺寸变化；根桌面保持隐藏。每个原生窗口的键鼠输入按对应的 X11 窗口路由。
 
 rootless 内置窗口管理器取得 `WM_S0` 和 SubstructureRedirect，处理 map/configure、激活、层级、关闭及常用 EWMH 状态请求；不要同时运行其他 X11/Composite 窗口管理器。移动和缩放双向同步，`WM_NORMAL_HINTS` 约束尺寸，关闭优先通知 `WM_DELETE_WINDOW`，不支持该协议的应用使用 XKillClient 语义（同一客户端的其他窗口也会关闭）。override-redirect 弹出窗口无装饰且不主动获取焦点；X11 宿主建立原生 WM_TRANSIENT_FOR 关系。
 
-当前仍限定软件 32-bpp XRGB 显示，不支持透明 ARGB。窗口管理已在 Linux X11 宿主实际运行验证；Wayland 限制应用控制全局窗口位置，winit 也未提供通用的 Wayland/macOS 瞬态父窗口接口，这些平台行为尚未验收。C ABI 已升级至 **v4**，旧插件必须重新编译；新建窗口先隐藏，再由 DDX 显式 map。
+当前仍限定软件 32-bpp XRGB 显示，不支持透明 ARGB。窗口管理已在 Linux X11 宿主实际运行验证；Wayland 限制应用控制全局窗口位置，winit 也未提供通用的 Wayland/macOS 瞬态父窗口接口，这些平台行为尚未验收。C ABI 已升级至 **v5**，旧插件必须重新编译；新建窗口先隐藏，再由 DDX 显式 map。
 
 ## SSH X11 forwarding
 
@@ -299,22 +299,24 @@ Rootful 桌面窗口调整大小时，单输出 X 屏幕会重建帧缓冲并更
 
 ## 多屏布局
 
-一个 X 屏幕可配置最多 16 个独立 RandR 输出。重复传入 `-wayx-monitor WxH+X+Y`，
-核心按所有输出的包围区域分配桌面；坐标非负，允许不同尺寸、垂直排列或镜像重叠。
-例如两个并排的 1920×1080 输出：
+Rootless 自动使用宿主显示器的物理像素范围，最多 16 个输出。X root 从 `(0,0)`
+开始，宿主负坐标只在 DDX 边界换算；移动窗口不扩大屏幕，不产生屏幕重分配或
+RandR 布局广播。窗口可以部分移出桌面，宿主可见部分仍使用准确的指针坐标。
 
 ```powershell
-.\wayx.cmd --rootless -- :100 -screen 0 3840x1080x24 `
-  -wayx-monitor 1920x1080+0+0 -wayx-monitor 1920x1080+1920+0 `
-  -listen tcp -nolisten local -auth .\Xauthority
+.\wayx.cmd --rootless -- :100 -listen tcp -nolisten local -auth .\Xauthority
 ```
 
-远端可用 `xrandr` 查询 `screen`、`screen_1` 等输出、设置主输出及调整布局/启停输出。
-这是共享桌面的多个输出，不是 `:100.0`、`:100.1` 多个独立 X 屏幕。
-Rootless 保留窗口在整个桌面内的坐标；协议测试覆盖第二输出绘图、指针、窗口跨屏移动、
-主输出、输出关闭/重新启用及屏幕重建。Linux 原生窗口测试检查第二输出位置。
-目前需要显式配置；尚未自动同步宿主显示器的插拔、排列、负坐标和独立缩放比例。
-Wayland/macOS 全局定位限制仍适用。
+Windows 通过显示配置/DPI 消息检测变化，X11 宿主订阅 RandR；其他后端保留每秒一次
+的显示布局兼容检查。布局变化时重建各输出，并在同一批次平移 X 窗口坐标、发布
+最终几何，保持宿主窗口位置。rootless 下远端可查询显示布局，不能改变宿主尺寸
+或 CRTC；不匹配的手工 `-screen`、`-crtcs`、`-wayx-monitor` 参数会明确报错。
+
+Rootful 仍可用 `-screen` 和重复的 `-wayx-monitor WxH+X+Y` 配置虚拟输出，允许远端
+RandR 客户端管理；rootful 原生窗口 resize 只控制单 CRTC 桌面。
+根屏幕单轴上限 16384、C framebuffer 上限 256 MiB。rootless 的 Rust root 保留
+4 字节占位图像和完整逻辑几何，C vfb 仍保存合法 root pixmap，仅在显示布局变化时
+可能重新分配。不同 DPI/热插拔的 Windows 实机体验仍需验收。
 
 ## OpenGL / GLX 与 RViz
 
@@ -377,7 +379,7 @@ cargo test --locked --test glx -- --ignored --nocapture
 内部 X11 连接使用一次性 socket readiness 通知；原生剪贴板兼容检查仍每 250 ms
 执行，不触发静止画面重绘。窗口元数据由生命周期钩子及属性写入标记更新。
 
-ABI v4 增加完整几何快照回调，在 flush 时原子发布几何与完成序号；客户端和 XLibre 核心须一同更新，旧核心不能与新客户端混用。
+ABI v5 保留完整几何快照的原子发布，并增加宿主桌面布局接口；客户端和 XLibre 核心须一同更新，旧核心不能与新客户端混用。
 `--frames` 是自动化测试模式，会主动请求后续帧，不用于测量空闲呈现行为。
 Linux 的 `scripts/test-native.py --core ...` 包含带认证的 rootful/rootless 空载和静止
 窗口 CPU 时间检查（预热后 2 秒内低于 50 ms）、新增 Damage 后恢复呈现及正常退出检查。

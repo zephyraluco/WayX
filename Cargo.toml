@@ -10,7 +10,7 @@ crate-type = ["rlib", "staticlib"]
 
 [features]
 default = ["desktop", "ssh"]
-desktop = ["dep:winit", "dep:wgpu", "dep:pollster", "dep:arboard", "dep:x11rb", "dep:xim", "dep:cosmic-text", "dep:polling"]
+desktop = ["dep:winit", "dep:wgpu", "dep:pollster", "dep:arboard", "dep:x11rb", "dep:xim", "dep:cosmic-text", "dep:polling", "dep:windows-sys"]
 ssh = ["dep:russh", "dep:tokio", "dep:rand", "dep:rpassword"]
 
 [dependencies]
@@ -32,9 +32,12 @@ rpassword = { version = "7", optional = true }
 xim = { version = "0.5", features = ["x11rb-server"], optional = true }
 cosmic-text = { version = "0.14", default-features = false, features = ["std", "swash"], optional = true }
 
-x11rb = { version = "0.13", features = ["xfixes"], optional = true }
+x11rb = { version = "0.13", features = ["xfixes", "randr"], optional = true }
 
 [dev-dependencies]
 x11rb = { version = "0.13", features = ["xfixes", "xinput", "glx", "randr"] }
 rand_10 = { package = "rand", version = "0.10" }
 tempfile = "3"
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61.2", optional = true, features = ["Win32_Foundation", "Win32_Graphics_Gdi", "Win32_System_LibraryLoader", "Win32_UI_WindowsAndMessaging"] }

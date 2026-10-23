@@ -484,6 +484,14 @@ impl Drop for ReadinessWatch {
 }
 impl SelectionBridge {
     pub(crate) fn watch(&self, wake: crate::notify::UiWake) -> Result<ReadinessWatch> {
+        ReadinessWatch::new(self.conn.clone(), wake)
+    }
+}
+impl ReadinessWatch {
+    pub(crate) fn new(
+        conn: std::sync::Arc<RustConnection>,
+        wake: crate::notify::UiWake,
+    ) -> Result<Self> {
         use std::sync::{
             Arc,
             atomic::{AtomicBool, Ordering},
@@ -491,7 +499,7 @@ impl SelectionBridge {
         let poller = Arc::new(polling::Poller::new()?);
         // SAFETY: ReadinessWatch retains conn and removes it before dropping it.
         unsafe {
-            poller.add(self.conn.stream(), polling::Event::none(1))?;
+            poller.add(conn.stream(), polling::Event::none(1))?;
         }
         let stop = Arc::new(AtomicBool::new(false));
         let failure = Arc::new(std::sync::Mutex::new(None));
@@ -530,7 +538,7 @@ impl SelectionBridge {
             })?;
         Ok(ReadinessWatch {
             poller,
-            conn: self.conn.clone(),
+            conn,
             stop,
             thread: Some(thread),
             failure,

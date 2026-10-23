@@ -17,7 +17,7 @@ jobs:
       - name: Exercise real X11 rendering, input, clipboard and window management
         run: |
           export WAYX_TEST_CORE="$(cat build/xlibre/wayx-core-path.txt)"
-          cargo test --locked --test xlibre --test rootless --test window_manager -- --ignored --nocapture
+          cargo test --locked --test xlibre --test rootless --test window_manager --test desktop_layout -- --ignored --nocapture
           WAYX_TEST_MONITORS=1 cargo test --locked --test xlibre -- --ignored --nocapture
       - name: Verify real Xlib XIM interoperability
         run: |
@@ -121,7 +121,7 @@ jobs:
         timeout-minutes: 10
         shell: pwsh
         run: |
-          cargo test --locked --test xlibre --test rootless --test window_manager --no-run
+          cargo test --locked --test xlibre --test rootless --test window_manager --test desktop_layout --no-run
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - name: Exercise real Windows X11 protocol
         timeout-minutes: 3
@@ -131,7 +131,7 @@ jobs:
         run: |
           $env:PATH = "$pwd/build/windows-native/bin;$pwd/build/windows-installed/x64-windows/bin;$env:WAYX_MSYS2_ROOT/ucrt64/bin;" + $env:PATH
           $env:WAYX_TEST_CORE = (Get-Content build/xlibre/wayx-core-path.txt).Trim()
-          cargo test --locked --test xlibre --test rootless --test window_manager -- --ignored --nocapture
+          cargo test --locked --test xlibre --test rootless --test window_manager --test desktop_layout -- --ignored --nocapture
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           $env:WAYX_TEST_MONITORS = "1"
           cargo test --locked --test xlibre -- --ignored --nocapture

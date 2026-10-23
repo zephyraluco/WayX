@@ -18,9 +18,9 @@ pub const FULLSCREEN: u32 = 32;
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct WindowState {
-    /// Outer X11 window position in root coordinates.
+    /// Rootless X border origin in physical host desktop coordinates.
     pub x: i32,
-    /// Outer X11 window position in root coordinates.
+    /// Rootless X border origin in physical host desktop coordinates.
     pub y: i32,
     /// Bitset of ROOTLESS, OVERRIDE_REDIRECT, ABOVE, MINIMIZED, MAXIMIZED, FULLSCREEN.
     pub flags: u32,

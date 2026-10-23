@@ -67,9 +67,13 @@ def geometry_client(binary, process, display, auth, log):
         client.stdin.write(text + "\n"); client.stdin.flush()
         expect("GEOMETRY DONE")
     def corrections():
-        return log.read_text().count("applying server position")
+        contents=log.read_text()
+        return (contents.count("applying server position"),contents.count("WayX host desktop layout applied:"))
     def verify_drag(before, steps=300):
-        count = corrections() - before
+        after=corrections()
+        count = after[0] - before[0]
+        if after[1] != before[1]:
+            raise RuntimeError("Dragging changed the host desktop layout")
         if count:
             raise RuntimeError(f"Accepted local drag caused {count} native position corrections")
         print(f"{steps}-step drag: zero native position corrections.", flush=True)
@@ -226,8 +230,7 @@ with tempfile.TemporaryDirectory(prefix="wayx-idle-cpu-") as directory:
     env.update(RUST_LOG="wayx=debug", NO_COLOR="1")
     with log.open("w") as output:
         process = subprocess.Popen([str(args.binary.resolve()), "serve", "--rootless", "--core",
-                                    str(args.core.resolve()), "--", f":{args.display}", "-screen", "0",
-                                    "1280x800x24", "-crtcs", "1@1280x800", "-listen", "tcp",
+                                    str(args.core.resolve()), "--", f":{args.display}", "-listen", "tcp",
                                     "-nolisten", "local", "-auth", str(auth)],
                                    env=env, stdout=output, stderr=output)
         try:

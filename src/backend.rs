@@ -135,6 +135,7 @@ pub struct Window {
 }
 
 /// Stable wire events. Keys carry physical USB HID usage codes; DDX maps to X keycodes.
+/// MOVE carries physical host desktop coordinates; MOTION carries window-local pixels.
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct InputEvent {
@@ -159,6 +160,7 @@ pub mod event {
     pub const SHUTDOWN: u32 = 10;
     pub const MOVE: u32 = 11;
     pub const STATE: u32 = 12;
+    pub const DESKTOP: u32 = 13;
 }
 
 #[derive(Default)]
@@ -173,6 +175,7 @@ pub struct Backend {
     pub(crate) output_pending: bool,
     pub(crate) pending_geometry: BTreeMap<u32, crate::window::GeometrySnapshot>,
     pub(crate) pending_maps: BTreeMap<u32, bool>,
+    pub desktop_layout: Option<crate::layout::DesktopLayout>,
     pub worker_exited: bool,
     pub(crate) input_wake: Option<crate::notify::InputWake>,
 }
@@ -297,7 +300,7 @@ impl Backend {
         Ok(())
     }
     pub fn push_input(&mut self, input: InputEvent) -> Result<(), Error> {
-        if !(event::MOTION..=event::STATE).contains(&input.kind)
+        if !(event::MOTION..=event::DESKTOP).contains(&input.kind)
             || !input.x.is_finite()
             || !input.y.is_finite()
         {

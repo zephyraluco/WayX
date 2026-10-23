@@ -13,8 +13,10 @@ static PropertyPtr property(WindowPtr window,Atom atom,int format) {
 static uint32_t hint_dimension(CARD32 value) {return value>16384?16384:value;}
 static void sync_window_state(WindowPtr window,WayxWindow *tracked) {
     WayxWindowState state={0};
-    state.x=window->drawable.x-window->borderWidth;
-    state.y=window->drawable.y-window->borderWidth;
+    int64_t host_x=(int64_t)window->drawable.x-window->borderWidth+desktop_origin_x;
+    int64_t host_y=(int64_t)window->drawable.y-window->borderWidth+desktop_origin_y;
+    state.x=host_x<INT32_MIN?INT32_MIN:host_x>INT32_MAX?INT32_MAX:host_x;
+    state.y=host_y<INT32_MIN?INT32_MIN:host_y>INT32_MAX?INT32_MAX:host_y;
     state.flags=WAYX_ROOTLESS|(window->overrideRedirect?WAYX_OVERRIDE_REDIRECT:0);
     PropertyPtr value=property(window,XA_WM_TRANSIENT_FOR,32);
     if(value && value->size>=1) state.transient_for=((CARD32*)value->data)[0];

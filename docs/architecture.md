@@ -4,7 +4,7 @@
 flowchart TB
   A[Remote X11 Applications] <--> B[russh · SSH X11 Forwarding]
   B <--> C[XLibre Core · FB / Pixman]
-  C <--> D[Custom C DDX · ABI v4]
+  C <--> D[Custom C DDX · ABI v5]
   D <--> E[Rust Window / Framebuffer / Input State]
   E --> F[wgpu · Damage Texture Upload]
   E <--> G[winit · Native Windows and Events]
@@ -66,7 +66,7 @@ GL dispatch 时意外执行绘图。此路径不提供服务端间接 GL、DRI2/
 
 Rust 内部 X11 连接同时驱动 Selection 与 WM_S0/SubstructureRedirect，避免两套事件消费者。处理 MapRequest、ConfigureRequest、常用 EWMH ClientMessage，维护客户端列表、堆叠顺序和活动窗口。DDX 将 ICCCM 尺寸约束、瞬态关系、坐标及窗口状态以固定 64 字节结构同步到 Rust；原生 MOVE/RESIZE/STATE 回到 C 的服务器线程执行。新建窗口保持隐藏，直到显式映射，避免未完成初始化的根桌面被呈现。
 
-原生关闭先发送 WM_DELETE_WINDOW；未声明协议时终止该 X11 客户端。鼠标点击提升并聚焦普通窗口，hover 不改变层级。override-redirect 保留弹出行为。Linux X11 宿主验证了双向几何与瞬态父窗口关系；Wayland 全局定位受协议限制，macOS/Wayland 的原生 owner 关系仍需专用实现及原生验证。ABI v4 拒绝旧版本插件，升级必须重建核心。
+原生关闭先发送 WM_DELETE_WINDOW；未声明协议时终止该 X11 客户端。鼠标点击提升并聚焦普通窗口，hover 不改变层级。override-redirect 保留弹出行为。Linux X11 宿主验证了双向几何与瞬态父窗口关系；Wayland 全局定位受协议限制，macOS/Wayland 的原生 owner 关系仍需专用实现及原生验证。ABI v5 拒绝旧版本插件，升级必须重建核心。
 
 ## 输入
 
@@ -200,3 +200,26 @@ UI 在事件批次结束时发送连续移动的最后一个值，遇到其他�
 快照单元测试穿插领取输入、Damage、暂存和 flush，验证 UI 只能看到完整旧/新版本。
 原生夹具额外启用持续重绘，按约 3 ms 间隔执行 300 步移动，并统计实际原生位置
 纠正调用；服务器接受本地移动时，调用增量必须为零。Windows 分支由原生 CI 执行。
+
+## Rootless 宿主桌面
+
+原生 UI 在启动 DDX 前提交 DesktopLayout：物理原点、根屏幕宽高和最多 16 个宿主
+显示器矩形。所有 CRTC 统一归一化到这个原点，预先校验尺寸、内存和布局一致性。
+ABI v5 追加 desktop_layout 读取接口，DESKTOP 输入通知运行期变化。没有宿主布局的
+独立协议测试核心继续采用手工参数；实际 rootless UI 必须完成宿主布局初始化。
+
+MOVE/WindowState 使用宿主绝对坐标；MOTION 仍是窗口局部坐标，加 drawable 原点
+即可得到 X 根坐标，不重复减桌面原点。保留 CursorLimits，不钳制整个窗口到 root。
+窗口拖动和缩放不调整屏幕。Windows 使用独立隐藏顶层窗口识别显示/DPI 配置变化（无应用窗口时也接收广播），
+X11 使用独立宿主 RandR 连接和一次性 readiness，避免混入内部 X11 应答唤醒路径。
+其他后端用每秒一次兼容检查；未变化的布局不入队。
+
+只有宿主布局变更进入独立多 CRTC 更新路径：准备输出、更新 root 存储和尺寸、
+归一化 CRTC、按原点差平移 X 窗口，最后原子发布完整几何。移除的输出保持断开，
+保留资源 ID；rootless 的客户端 screen/CRTC 修改请求被拒绝。内存分配失败明确
+终止会话，不在旧范围上静默接受不可达输入。
+
+窗口 1 始终保留用于内部剪贴板/XIM 生命周期，逻辑大小发布在 GeometrySnapshot，
+Rust 像素为 1×1；C root 保留正常 vfb pixmap。热插拔可以重分配 C 存储；不采用
+固定最大 stride 或缺页处理，避免改变 XWD/vfb 的存储约束。协议回归覆盖屏幕右下
+点击、负坐标、原点平移、2→3→1 输出、Rust root 4 字节以及拖动零 RandR 广播。

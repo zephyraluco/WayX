@@ -5,10 +5,10 @@
 #ifdef __cplusplus
 extern "C" {
 #endif
-#define WAYX_ABI_VERSION 4u
+#define WAYX_ABI_VERSION 5u
 typedef struct WayxBackend WayxBackend;
 enum WayxEventKind { WAYX_MOTION=1, WAYX_BUTTON, WAYX_KEY, WAYX_SCROLL,
-    WAYX_FOCUS, WAYX_CLOSE, WAYX_RESIZE, WAYX_TEXT, WAYX_CLIPBOARD, WAYX_SHUTDOWN, WAYX_MOVE, WAYX_STATE };
+    WAYX_FOCUS, WAYX_CLOSE, WAYX_RESIZE, WAYX_TEXT, WAYX_CLIPBOARD, WAYX_SHUTDOWN, WAYX_MOVE, WAYX_STATE, WAYX_DESKTOP };
 /* RESIZE/MOVE detail is a request sequence, not a completion acknowledgement. */
 typedef struct WayxInputEvent {
     uint32_t kind, window, detail, flags;
@@ -18,6 +18,7 @@ typedef struct WayxInputEvent {
 enum WayxWindowFlags { WAYX_ROOTLESS=1, WAYX_OVERRIDE_REDIRECT=2, WAYX_ABOVE=4,
     WAYX_MINIMIZED=8, WAYX_MAXIMIZED=16, WAYX_FULLSCREEN=32 };
 typedef struct WayxWindowState {
+    /* Rootless X border origin in physical host coordinates, not X root coordinates. */
     int32_t x,y;
     uint32_t flags,transient_for;
     uint32_t min_width,min_height,max_width,max_height;
@@ -29,6 +30,13 @@ typedef struct WayxGeometrySnapshot {
     WayxWindowState state;
     uint32_t width,height,move_ack,resize_ack;
 } WayxGeometrySnapshot;
+#define WAYX_MAX_MONITORS 16
+typedef struct WayxMonitorRect { int32_t x,y; uint32_t width,height; } WayxMonitorRect;
+typedef struct WayxDesktopLayout {
+    int32_t origin_x,origin_y;
+    uint32_t width,height,count;
+    WayxMonitorRect monitors[WAYX_MAX_MONITORS];
+} WayxDesktopLayout;
 /* All callbacks return 0 for success, negative for error, except input_poll (1/0/error).
  * Handles may be shared by threads. Buffer pointers are borrowed only during a call.
  * Frame data is little-endian XRGB8888, starting at the damage rectangle's origin.
@@ -52,6 +60,8 @@ typedef struct WayxApi {
     int32_t (*output_flush)(WayxBackend*);
     /* Stage a complete snapshot; output_flush publishes it atomically. */
     int32_t (*window_geometry)(WayxBackend*,uint32_t,const WayxGeometrySnapshot*);
+    /* 1 = host layout, 0 = standalone/manual core, negative = failure. */
+    int32_t (*desktop_layout)(WayxBackend*,WayxDesktopLayout*);
 } WayxApi;
 const WayxApi *wayx_get_api(void);
 WayxBackend *wayx_backend_new(void);

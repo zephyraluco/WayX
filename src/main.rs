@@ -115,6 +115,7 @@ fn main() -> Result<()> {
                 None,
                 None,
                 frames,
+                None,
             )?;
         }
         #[cfg(feature = "desktop")]
@@ -141,6 +142,7 @@ fn main() -> Result<()> {
                     None
                 }
             };
+            let (ready_send, ready_receive) = std::sync::mpsc::channel();
             let shared = backend.clone();
             let worker = std::thread::spawn(move || -> Result<i32> {
                 let _completion = wayx::notify::WorkerExit(shared.clone());
@@ -157,6 +159,11 @@ fn main() -> Result<()> {
                         *mut *mut std::ffi::c_char,
                     ) -> i32>(b"wayx_xserver_run\0")
                 }?;
+                if rootless {
+                    ready_receive
+                        .recv()
+                        .context("Native desktop layout initialization failed")?;
+                }
                 let mut argv = vec![std::ffi::CString::new("XWayX")?];
                 if rootless {
                     argv.push(std::ffi::CString::new("-wayx-rootless")?);
@@ -177,6 +184,7 @@ fn main() -> Result<()> {
                 Some(worker),
                 selection_config,
                 frames,
+                rootless.then_some(ready_send),
             )?;
         }
         #[cfg(feature = "ssh")]

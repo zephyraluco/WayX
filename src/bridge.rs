@@ -1,4 +1,4 @@
-//! C ABI v4. Callers own pointers and must keep buffers valid for each call.
+//! C ABI v5. Callers own pointers and must keep buffers valid for each call.
 //! The handle may be shared across threads; freeing it requires all calls to stop.
 use crate::backend::{Backend, InputEvent, Rect};
 use std::{
@@ -6,7 +6,7 @@ use std::{
     sync::{Arc, Mutex},
 };
 
-pub const ABI_VERSION: u32 = 4;
+pub const ABI_VERSION: u32 = 5;
 pub type SharedBackend = Arc<Mutex<Backend>>;
 pub struct Handle(pub SharedBackend);
 
@@ -360,9 +360,35 @@ unsafe extern "C" fn output_flush(handle: *mut Handle) -> i32 {
         })
     }
 }
+/// # Safety
+/// The handle is live and out points to writable layout storage.
+unsafe extern "C" fn desktop_layout(
+    handle: *mut Handle,
+    out: *mut crate::layout::DesktopLayout,
+) -> i32 {
+    let mut available = false;
+    let result = unsafe {
+        access(handle, |backend| {
+            if out.is_null() {
+                return Err(());
+            }
+            if let Some(layout) = backend.desktop_layout {
+                layout.validate().map_err(|_| ())?;
+                out.write(layout);
+                available = true;
+            }
+            Ok(())
+        })
+    };
+    if result < 0 {
+        result
+    } else {
+        i32::from(available)
+    }
+}
 #[repr(C)]
 pub struct Api {
-    // Appended fields below require rebuilding the DDX for ABI v4.
+    // Appended fields below require rebuilding the DDX for ABI v5.
     pub abi_version: u32,
     pub struct_size: u32,
     pub window_create: unsafe extern "C" fn(*mut Handle, u32, u32, u32, u32) -> i32,
@@ -383,8 +409,10 @@ pub struct Api {
     pub output_flush: unsafe extern "C" fn(*mut Handle) -> i32,
     pub window_geometry:
         unsafe extern "C" fn(*mut Handle, u32, *const crate::window::GeometrySnapshot) -> i32,
+    pub desktop_layout: unsafe extern "C" fn(*mut Handle, *mut crate::layout::DesktopLayout) -> i32,
 }
 pub static API: Api = Api {
+    desktop_layout,
     window_geometry,
     input_fd,
     input_ack,
