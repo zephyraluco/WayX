@@ -132,6 +132,7 @@ pub struct Window {
     pub state: crate::window::WindowState,
     pub framebuffer: Framebuffer,
     pub resize_ack: u32,
+    pub move_ack: u32,
 }
 
 /// Stable wire events. Keys carry physical USB HID usage codes; DDX maps to X keycodes.
@@ -172,6 +173,7 @@ pub struct Backend {
     pub(crate) ui_wake: Option<crate::notify::UiWake>,
     pub(crate) output_pending: bool,
     pub(crate) resize_acks: BTreeMap<u32, u32>,
+    pub(crate) move_acks: BTreeMap<u32, u32>,
     pub worker_exited: bool,
     pub(crate) input_wake: Option<crate::notify::InputWake>,
 }
@@ -185,6 +187,12 @@ impl Backend {
         for (id, sequence) in std::mem::take(&mut self.resize_acks) {
             if let Some(window) = self.windows.get_mut(&id) {
                 window.resize_ack = sequence;
+                self.output_pending = true;
+            }
+        }
+        for (id, sequence) in std::mem::take(&mut self.move_acks) {
+            if let Some(window) = self.windows.get_mut(&id) {
+                window.move_ack = sequence;
                 self.output_pending = true;
             }
         }
@@ -226,6 +234,7 @@ impl Backend {
                 state: Default::default(),
                 framebuffer: Framebuffer::new(width, height)?,
                 resize_ack: 0,
+                move_ack: 0,
             },
         );
         Ok(())
@@ -268,6 +277,7 @@ impl Backend {
         }
         self.windows.remove(&id);
         self.resize_acks.remove(&id);
+        self.move_acks.remove(&id);
         if self.focus == Some(id) {
             self.focus = None;
         }
@@ -293,10 +303,11 @@ impl Backend {
         if input.window != 0 && !self.windows.contains_key(&input.window) {
             return Err(Error::UnknownWindow);
         }
-        // Coalesce only adjacent motion, preserving key/button ordering.
-        if input.kind == event::MOTION
+        // Coalesce only adjacent moves of the same kind and window. Never cross
+        // key/button, resize, state, or lifecycle ordering boundaries.
+        if matches!(input.kind, event::MOTION | event::MOVE)
             && let Some(last) = self.events.back_mut()
-            && last.kind == event::MOTION
+            && last.kind == input.kind
             && last.window == input.window
         {
             *last = input;
@@ -485,6 +496,53 @@ mod tests {
             .unwrap();
         }
         assert_eq!(b.push_input(motion), Err(Error::QueueFull));
+    }
+    #[test]
+    fn drag_bursts_coalesce_without_crossing_resize_or_window_boundaries() {
+        let mut backend = Backend::default();
+        backend.create(1, 0, 2, 2).unwrap();
+        backend.create(2, 0, 2, 2).unwrap();
+        for sequence in 1..=400 {
+            backend
+                .push_input(InputEvent {
+                    kind: event::MOVE,
+                    window: 1,
+                    detail: sequence,
+                    x: sequence as f64,
+                    ..Default::default()
+                })
+                .unwrap();
+        }
+        backend
+            .push_input(InputEvent {
+                kind: event::RESIZE,
+                window: 1,
+                x: 100.,
+                y: 100.,
+                ..Default::default()
+            })
+            .unwrap();
+        backend
+            .push_input(InputEvent {
+                kind: event::MOVE,
+                window: 1,
+                detail: 401,
+                ..Default::default()
+            })
+            .unwrap();
+        backend
+            .push_input(InputEvent {
+                kind: event::MOVE,
+                window: 2,
+                detail: 1,
+                ..Default::default()
+            })
+            .unwrap();
+        assert_eq!(backend.poll_input().unwrap().detail, 400);
+        assert_eq!(backend.poll_input().unwrap().kind, event::RESIZE);
+        assert_eq!(backend.poll_input().unwrap().detail, 401);
+        assert_eq!(backend.poll_input().unwrap().window, 2);
+        assert!(backend.poll_input().is_none());
     }
     #[test]
     fn clipboard_changes_are_versioned() {

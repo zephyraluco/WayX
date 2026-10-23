@@ -137,3 +137,116 @@ mod tests {
         assert_eq!(sync.target(), None);
     }
 }
+
+/// X border origin and native client origin share physical desktop coordinates.
+/// Window decorations are excluded; winit supplies their current physical offset.
+pub(crate) fn outer_for_client(
+    client: (i32, i32),
+    current_client: (i32, i32),
+    current_outer: (i32, i32),
+) -> (i32, i32) {
+    (
+        client
+            .0
+            .saturating_sub(current_client.0.saturating_sub(current_outer.0)),
+        client
+            .1
+            .saturating_sub(current_client.1.saturating_sub(current_outer.1)),
+    )
+}
+
+pub(crate) struct PositionSync {
+    server: (i32, i32),
+    target: Option<(i32, i32)>,
+    pending: Option<(u32, (i32, i32))>,
+    sequence: u32,
+}
+impl PositionSync {
+    pub fn new(position: (i32, i32), acknowledgement: u32) -> Self {
+        Self {
+            server: position,
+            target: Some(position),
+            pending: None,
+            sequence: acknowledgement,
+        }
+    }
+    pub fn server_update(&mut self, position: (i32, i32), acknowledgement: u32) {
+        if let Some((sequence, requested)) = self.pending {
+            if acknowledgement != sequence {
+                return;
+            }
+            self.pending = None;
+            self.server = position;
+            // A matching acknowledgement confirms the position we already
+            // applied locally. Do not reapply it over a newer native movement
+            // whose Moved event may still be queued.
+            self.target = (position != requested).then_some(position);
+        } else if self.server != position {
+            self.server = position;
+            self.target = Some(position);
+        }
+    }
+    pub fn target(&self) -> Option<(i32, i32)> {
+        self.target
+    }
+    pub fn native_move(&mut self, position: (i32, i32)) -> Option<u32> {
+        if self.target == Some(position) {
+            self.target = None;
+            return None;
+        }
+        if self.pending.is_some_and(|(_, old)| old == position)
+            || (self.pending.is_none() && self.server == position)
+        {
+            return None;
+        }
+        self.sequence = self.sequence.wrapping_add(1).max(1);
+        self.pending = Some((self.sequence, position));
+        self.target = None;
+        Some(self.sequence)
+    }
+}
+
+#[cfg(test)]
+mod position_tests {
+    use super::*;
+    #[test]
+    fn stale_snapshots_and_old_acknowledgements_cannot_reverse_drag() {
+        let mut sync = PositionSync::new((20, 20), 41);
+        assert_eq!(sync.native_move((20, 20)), None);
+        let old = sync.native_move((200, 100)).unwrap();
+        let latest = sync.native_move((-120, 300)).unwrap();
+        sync.server_update((20, 20), 41);
+        assert_eq!(sync.target(), None);
+        sync.server_update((200, 100), old);
+        assert_eq!(sync.target(), None);
+        sync.server_update((-120, 300), latest);
+        assert_eq!(sync.target(), None);
+        assert_eq!(sync.native_move((-120, 300)), None);
+        assert_eq!(sync.native_move((-120, 300)), None);
+        sync.server_update((500, 400), latest);
+        assert_eq!(sync.target(), Some((500, 400)));
+        assert_eq!(sync.native_move((500, 400)), None);
+        sync.server_update((500, 400), latest);
+        assert_eq!(sync.target(), None);
+    }
+    #[test]
+    fn decorations_and_negative_physical_coordinates_round_trip() {
+        let client = (-1500, -80);
+        let outer = (-1508, -111);
+        assert_eq!(
+            outer_for_client((-1200, -100), client, outer),
+            (-1208, -131)
+        );
+        assert_eq!(outer_for_client(client, client, outer), outer);
+        assert_eq!(outer_for_client(client, client, client), client);
+    }
+    #[test]
+    fn rejected_move_is_acknowledged_without_echo() {
+        let mut sync = PositionSync::new((20, 20), 0);
+        sync.native_move((20, 20));
+        let seq = sync.native_move((100, 100)).unwrap();
+        sync.server_update((20, 20), seq);
+        assert_eq!(sync.target(), Some((20, 20)));
+        assert_eq!(sync.native_move((20, 20)), None);
+    }
+}

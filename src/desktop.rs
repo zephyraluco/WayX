@@ -287,6 +287,8 @@ struct Native {
     remote_size: (u32, u32),
     resize_sync: crate::geometry::ResizeSync,
     issued_size: Option<(u32, u32)>,
+    position_sync: crate::geometry::PositionSync,
+    issued_position: Option<(i32, i32)>,
     title: String,
     transient_owner: Option<u32>,
     composing: bool,
@@ -305,7 +307,7 @@ impl Native {
         title: &str,
         size: (u32, u32),
         state: &WindowState,
-        resize_ack: u32,
+        acknowledgements: (u32, u32),
         owner: Option<&Window>,
     ) -> Result<Self> {
         let (width, height) = size;
@@ -341,7 +343,7 @@ impl Native {
         let _ = owner;
         let initial_target = state.constrain(width, height);
         let mut resize_sync =
-            crate::geometry::ResizeSync::new((width, height), initial_target, resize_ack);
+            crate::geometry::ResizeSync::new((width, height), initial_target, acknowledgements.0);
         // Establish the initial size before GPU setup: a real user resize can
         // arrive while the adapter is being initialized.
         let initial_size = window.inner_size();
@@ -378,6 +380,11 @@ impl Native {
             remote_size: (width, height),
             resize_sync,
             issued_size: None,
+            position_sync: crate::geometry::PositionSync::new(
+                (state.x, state.y),
+                acknowledgements.1,
+            ),
+            issued_position: None,
             title: title.to_owned(),
             transient_owner: None,
             composing: false,
@@ -396,25 +403,22 @@ impl Native {
         width: u32,
         height: u32,
         title: &str,
-        resize_ack: u32,
+        acknowledgements: (u32, u32),
     ) -> Result<()> {
         if self.title != title {
             self.window.set_title(title);
             self.title = title.to_owned();
         }
         self.remote_size = (width, height);
-        self.resize_sync.server_update((width, height), resize_ack);
+        self.resize_sync
+            .server_update((width, height), acknowledgements.0);
         if state.flags & window_state::ROOTLESS == 0 {
             self.sync_geometry(state);
             return Ok(());
         }
         let previous = self.applied_state;
-        if previous.is_none_or(|old| old.x != state.x || old.y != state.y) {
-            let position = winit::dpi::PhysicalPosition::new(state.x, state.y);
-            if self.window.outer_position().ok() != Some(position) {
-                self.window.set_outer_position(position);
-            }
-        }
+        self.position_sync
+            .server_update((state.x, state.y), acknowledgements.1);
         if previous != Some(*state) {
             self.window
                 .set_decorations(state.flags & window_state::OVERRIDE_REDIRECT == 0);
@@ -475,8 +479,38 @@ impl Native {
             }
             self.applied_state = Some(*state);
         }
+        self.sync_position(state);
         self.sync_geometry(state);
         Ok(())
+    }
+    fn sync_position(&mut self, state: &WindowState) {
+        if state.flags
+            & (window_state::MINIMIZED | window_state::MAXIMIZED | window_state::FULLSCREEN)
+            != 0
+            || self.window.is_minimized().unwrap_or(false)
+        {
+            return;
+        }
+        let Some(target) = self.position_sync.target() else {
+            self.issued_position = None;
+            return;
+        };
+        let (Ok(client), Ok(outer)) = (self.window.inner_position(), self.window.outer_position())
+        else {
+            return;
+        };
+        if (client.x, client.y) == target {
+            self.position_sync.native_move(target);
+            self.issued_position = None;
+            return;
+        }
+        let outer =
+            crate::geometry::outer_for_client(target, (client.x, client.y), (outer.x, outer.y));
+        if self.issued_position != Some(outer) {
+            self.issued_position = Some(outer);
+            self.window
+                .set_outer_position(winit::dpi::PhysicalPosition::new(outer.0, outer.1));
+        }
     }
     fn sync_geometry(&mut self, state: &WindowState) {
         if state.flags & window_state::MINIMIZED != 0 || self.window.is_minimized().unwrap_or(false)
@@ -605,6 +639,7 @@ fn resize_input(id: u32, state: &WindowState, width: u32, height: u32, flags: u3
 }
 struct App {
     backend: SharedBackend,
+    pending_move: Option<InputEvent>,
     wake_pending: Arc<AtomicBool>,
     ui_wake: crate::notify::UiWake,
     selection_watch: Option<crate::selection::ReadinessWatch>,
@@ -624,6 +659,26 @@ struct App {
 }
 impl App {
     fn input(&mut self, input: InputEvent) {
+        if input.kind == event::MOVE {
+            if self
+                .pending_move
+                .is_some_and(|old| old.window != input.window)
+            {
+                self.flush_move();
+            }
+            self.pending_move = Some(input);
+            return;
+        }
+        // Preserve input ordering at every non-move boundary.
+        self.flush_move();
+        self.enqueue_input(input);
+    }
+    fn flush_move(&mut self) {
+        if let Some(input) = self.pending_move.take() {
+            self.enqueue_input(input);
+        }
+    }
+    fn enqueue_input(&mut self, input: InputEvent) {
         let result = self.backend.lock().unwrap().push_input(input);
         if let Err(error) = result {
             tracing::error!(%error,"input queue rejected event");
@@ -722,7 +777,7 @@ impl App {
                     &window.title,
                     (window.framebuffer.width, window.framebuffer.height),
                     &window.state,
-                    window.resize_ack,
+                    (window.resize_ack, window.move_ack),
                     owner,
                 ))?;
                 self.native.insert(native.window.id(), native);
@@ -737,7 +792,7 @@ impl App {
                     window.framebuffer.width,
                     window.framebuffer.height,
                     &window.title,
-                    window.resize_ack,
+                    (window.resize_ack, window.move_ack),
                 )?;
                 if let Some((sequence, (width, height))) = native.resize_sync.take_input() {
                     let mut input =
@@ -883,6 +938,7 @@ impl ApplicationHandler<()> for App {
         }
     }
     fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
+        self.flush_move();
         if self.error.is_some() {
             event_loop.exit();
             return;
@@ -958,9 +1014,35 @@ impl ApplicationHandler<()> for App {
                 }
             }
             WindowEvent::Moved(position) => {
+                if self.demo
+                    || native
+                        .applied_state
+                        .is_none_or(|state| state.flags & window_state::ROOTLESS == 0)
+                {
+                    return;
+                }
+                // Moved carries the outer origin. Ignore stale queued events,
+                // then use the actual physical client origin in both directions.
+                let (Ok(outer), Ok(client)) = (
+                    native.window.outer_position(),
+                    native.window.inner_position(),
+                ) else {
+                    return;
+                };
+                tracing::trace!(?position, ?outer, ?client, "native move observed");
+                if outer != position || native.window.is_minimized().unwrap_or(false) {
+                    return;
+                }
+                let position = (client.x.clamp(-32768, 32767), client.y.clamp(-32768, 32767));
+                let Some(sequence) = native.position_sync.native_move(position) else {
+                    return;
+                };
+                native.issued_position = None;
+                tracing::trace!(?position, sequence, "native move queued");
                 input.kind = event::MOVE;
-                input.x = position.x as f64;
-                input.y = position.y as f64;
+                input.detail = sequence;
+                input.x = position.0 as f64;
+                input.y = position.1 as f64;
             }
             WindowEvent::Occluded(occluded) => {
                 native.occluded = occluded;
@@ -1300,6 +1382,7 @@ pub fn run(
         wake_pending,
         ui_wake,
         selection_watch: None,
+        pending_move: None,
         backend,
         native: HashMap::new(),
         clipboard: None,

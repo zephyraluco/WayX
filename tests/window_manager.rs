@@ -245,6 +245,7 @@ fn window_management_should_route_requests_hints_states_and_cooperative_close() 
         for input in [
             InputEvent {
                 kind: event::MOVE,
+                detail: 23,
                 window: a,
                 x: 70.0,
                 y: 90.0,
@@ -269,7 +270,76 @@ fn window_management_should_route_requests_hints_states_and_cooperative_close() 
             let backend = backend.lock().unwrap();
             let window = &backend.windows[&a];
             Ok(window.resize_ack == 17
+                && window.move_ack == 23
                 && (window.framebuffer.width, window.framebuffer.height) == (128, 110))
+        })?;
+        // An unchanged move still acknowledges its sequence, with no geometry echo.
+        backend.lock().unwrap().push_input(InputEvent {
+            kind: event::MOVE,
+            window: a,
+            detail: 24,
+            x: 70.,
+            y: 90.,
+            ..Default::default()
+        })?;
+        pump(&mut wm, || {
+            let backend = backend.lock().unwrap();
+            let window = &backend.windows[&a];
+            Ok(window.move_ack == 24 && (window.state.x, window.state.y) == (70, 90))
+        })?;
+        conn.change_window_attributes(
+            a,
+            &ChangeWindowAttributesAux::new().event_mask(EventMask::STRUCTURE_NOTIFY),
+        )?
+        .check()?;
+        while conn.poll_for_event()?.is_some() {}
+        {
+            let mut backend = backend.lock().unwrap();
+            for sequence in 25..=424 {
+                backend.push_input(InputEvent {
+                    kind: event::MOVE,
+                    window: a,
+                    detail: sequence,
+                    x: f64::from(sequence + 46),
+                    y: 90.,
+                    ..Default::default()
+                })?;
+            }
+        }
+        pump(&mut wm, || {
+            let backend = backend.lock().unwrap();
+            let window = &backend.windows[&a];
+            Ok(window.move_ack == 424 && (window.state.x, window.state.y) == (470, 90))
+        })?;
+        let geometry = conn.get_geometry(a)?.reply()?;
+        anyhow::ensure!(
+            (geometry.x, geometry.y) == (470, 90),
+            "Coalesced move did not reach X11"
+        );
+        let mut configurations = 0;
+        while let Some(event) = conn.poll_for_event()? {
+            if let x11rb::protocol::Event::ConfigureNotify(event) = event
+                && event.window == a
+            {
+                configurations += 1;
+            }
+        }
+        println!("400 queued moves produced {configurations} ConfigureNotify events");
+        anyhow::ensure!(
+            (1..=2).contains(&configurations),
+            "400 queued moves generated {configurations} ConfigureNotify events"
+        );
+        conn.change_window_attributes(
+            a,
+            &ChangeWindowAttributesAux::new().event_mask(EventMask::NO_EVENT),
+        )?
+        .check()?;
+        conn.configure_window(a, &ConfigureWindowAux::new().x(-120).y(80))?;
+        conn.flush()?;
+        pump(&mut wm, || {
+            let backend = backend.lock().unwrap();
+            let window = &backend.windows[&a];
+            Ok((window.state.x, window.state.y) == (-120, 80))
         })?;
         // Pure width/height changes must synchronize even when the client paints nothing.
         for (width, height) in [(160u32, 120u32), (128, 110)] {

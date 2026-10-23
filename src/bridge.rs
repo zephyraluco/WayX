@@ -181,6 +181,9 @@ pub unsafe extern "C" fn wayx_input_poll(handle: *mut Handle, out: *mut InputEve
                 if event.kind == crate::backend::event::RESIZE && event.detail != 0 {
                     b.resize_acks.insert(event.window, event.detail);
                 }
+                if event.kind == crate::backend::event::MOVE && event.detail != 0 {
+                    b.move_acks.insert(event.window, event.detail);
+                }
                 out.write(event);
                 found = true;
             }

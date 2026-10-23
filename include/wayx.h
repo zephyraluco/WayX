@@ -9,7 +9,7 @@ extern "C" {
 typedef struct WayxBackend WayxBackend;
 enum WayxEventKind { WAYX_MOTION=1, WAYX_BUTTON, WAYX_KEY, WAYX_SCROLL,
     WAYX_FOCUS, WAYX_CLOSE, WAYX_RESIZE, WAYX_TEXT, WAYX_CLIPBOARD, WAYX_SHUTDOWN, WAYX_MOVE, WAYX_STATE };
-/* RESIZE detail may carry a nonzero sequence; Rust confirms it after output_flush. */
+/* RESIZE/MOVE detail may carry a nonzero sequence; Rust confirms it after output_flush. */
 typedef struct WayxInputEvent {
     uint32_t kind, window, detail, flags;
     double x, y;

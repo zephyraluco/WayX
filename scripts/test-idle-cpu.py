@@ -97,6 +97,22 @@ def geometry_client(binary, process, display, auth):
             if len(found) != 1:
                 raise RuntimeError("Could not find unique native geometry window")
             hwnd = found[0]
+            user.ClientToScreen.argtypes = [wintypes.HWND, ctypes.POINTER(wintypes.POINT)]
+            def native_position():
+                point = wintypes.POINT(0, 0)
+                if not user.ClientToScreen(hwnd, ctypes.byref(point)):
+                    raise ctypes.WinError(ctypes.get_last_error())
+                return point.x, point.y
+            def verify_position(x, y):
+                if native_position() != (x, y):
+                    raise RuntimeError(f"Native position {native_position()} differs from X11 {x},{y}")
+            def move(x, y):
+                rect = wintypes.RECT()
+                if not user.GetWindowRect(hwnd, ctypes.byref(rect)):
+                    raise ctypes.WinError(ctypes.get_last_error())
+                client = native_position()
+                if not user.SetWindowPos(hwnd, None, x-(client[0]-rect.left), y-(client[1]-rect.top), 0, 0, 0x15):
+                    raise ctypes.WinError(ctypes.get_last_error())
             def native_size():
                 rect = wintypes.RECT()
                 if not user.GetClientRect(hwnd, ctypes.byref(rect)):
@@ -112,6 +128,16 @@ def geometry_client(binary, process, display, auth):
                 current = native_size()
                 if not user.SetWindowPos(hwnd, None, 0, 0, width+outer.right-outer.left-current[0], height+outer.bottom-outer.top-current[1], 0x16):
                     raise ctypes.WinError(ctypes.get_last_error())
+            command("position 20 20 1000"); verify_position(20, 20)
+            for index in range(400):
+                move(100 + index, 120)
+            command("position 499 120 1000"); verify_position(499, 120)
+            command("remote-position -120 80"); verify_position(-120, 80)
+            command("border 3")
+            command("remote-position 140 160"); verify_position(140, 160)
+            move(220, 240)
+            command("position 220 240 1000"); verify_position(220, 240)
+            command("border 0")
             verify_size(400, 287)
             resize(720, 510)
             command("check 720 510 1000"); verify_size(720, 510)
@@ -126,7 +152,15 @@ def geometry_client(binary, process, display, auth):
             user.ShowWindow(hwnd, 6); time.sleep(.2)
             user.ShowWindow(hwnd, 9)
             command("check 512 310 1000"); verify_size(512, 310)
+            command("position 220 240 1000"); verify_position(220, 240)
         else:
+            command("position 20 20 1000")
+            command("local-position 499 120")
+            command("remote-position -120 80")
+            command("border 3")
+            command("remote-position 140 160")
+            command("local-position 220 240")
+            command("border 0")
             command("remote 640 480")
             command("remote 400 287")
         client.stdin.write("quit\n"); client.stdin.flush(); client.stdin.close()
@@ -190,6 +224,9 @@ with tempfile.TemporaryDirectory(prefix="wayx-idle-cpu-") as directory:
                     raise RuntimeError(f"Idle CPU time {elapsed:.3f}s exceeds 50 ms budget")
             if fixture is not None:
                 geometry_client(fixture, process, args.display, auth)
+        except Exception:
+            print(log.read_text(), flush=True)
+            raise
         finally:
             if process.poll() is None:
                 process.terminate()

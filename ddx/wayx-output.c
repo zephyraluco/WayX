@@ -167,7 +167,12 @@ static void flush_backend(void) {
             break;
         case WAYX_MOVE:
             if(target && event.x>=-32768 && event.x<=32767 && event.y>=-32768 && event.y<=32767) {
-                XID values[]={(int32_t)event.x,(int32_t)event.y};ConfigureWindow(target,CWX|CWY,values,serverClient);
+                int32_t x=event.x,y=event.y;
+                /* Even an unchanged/rejected request needs a final geometry ack. */
+                metadata_dirty=TRUE;
+                if (target->drawable.x-target->borderWidth!=x || target->drawable.y-target->borderWidth!=y) {
+                    XID values[]={x,y};ConfigureWindow(target,CWX|CWY,values,serverClient);
+                }
             }
             break;
         case WAYX_STATE:if(target) native_window_state(target,event.flags);break;
