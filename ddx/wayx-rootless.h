@@ -135,27 +135,36 @@ static void sync_rootless_windows(void) {
 /* Mirror XWin's screen-hook approach: metadata is inspected after mutations,
  * never re-read on every input event or clipboard maintenance request. Hooks
  * are unwrapped around calls so Composite and other wrappers remain chained. */
-#define WAYX_BOOL_HOOK(name,params,args) \
+/* Xwindows.h renames the Screen member while scrnintstr.h is parsed, then
+ * another header can undefine CreateWindow. Do not depend on its later macro state. */
+#ifndef WAYX_CREATE_WINDOW_MEMBER
+#ifdef WIN32
+#define WAYX_CREATE_WINDOW_MEMBER CreateWindowA
+#else
+#define WAYX_CREATE_WINDOW_MEMBER CreateWindow
+#endif
+#endif
+#define WAYX_BOOL_HOOK(name,member,params,args) \
 static name##ProcPtr saved_##name; \
 static Bool wayx_##name params { \
     ScreenPtr s=window->drawable.pScreen; metadata_dirty=TRUE; \
-    s->name=saved_##name; Bool result=s->name?s->name args:TRUE; \
-    saved_##name=s->name;s->name=wayx_##name;return result; }
-#define WAYX_VOID_HOOK(name,params,args) \
+    s->member=saved_##name; Bool result=s->member?s->member args:TRUE; \
+    saved_##name=s->member;s->member=wayx_##name;return result; }
+#define WAYX_VOID_HOOK(name,member,params,args) \
 static name##ProcPtr saved_##name; \
 static void wayx_##name params { \
     ScreenPtr s=window->drawable.pScreen; metadata_dirty=TRUE; \
-    s->name=saved_##name;if(s->name) s->name args; \
-    saved_##name=s->name;s->name=wayx_##name; }
-WAYX_BOOL_HOOK(CreateWindow,(WindowPtr window),(window))
-WAYX_BOOL_HOOK(DestroyWindow,(WindowPtr window),(window))
-WAYX_BOOL_HOOK(PositionWindow,(WindowPtr window,int x,int y),(window,x,y))
-WAYX_BOOL_HOOK(RealizeWindow,(WindowPtr window),(window))
-WAYX_BOOL_HOOK(UnrealizeWindow,(WindowPtr window),(window))
-WAYX_BOOL_HOOK(ChangeWindowAttributes,(WindowPtr window,unsigned long mask),(window,mask))
-WAYX_VOID_HOOK(ReparentWindow,(WindowPtr window,WindowPtr parent),(window,parent))
-WAYX_VOID_HOOK(RestackWindow,(WindowPtr window,WindowPtr sibling),(window,sibling))
-WAYX_VOID_HOOK(SetWindowPixmap,(WindowPtr window,PixmapPtr pixmap),(window,pixmap))
+    s->member=saved_##name;if(s->member) s->member args; \
+    saved_##name=s->member;s->member=wayx_##name; }
+WAYX_BOOL_HOOK(CreateWindow,WAYX_CREATE_WINDOW_MEMBER,(WindowPtr window),(window))
+WAYX_BOOL_HOOK(DestroyWindow,DestroyWindow,(WindowPtr window),(window))
+WAYX_BOOL_HOOK(PositionWindow,PositionWindow,(WindowPtr window,int x,int y),(window,x,y))
+WAYX_BOOL_HOOK(RealizeWindow,RealizeWindow,(WindowPtr window),(window))
+WAYX_BOOL_HOOK(UnrealizeWindow,UnrealizeWindow,(WindowPtr window),(window))
+WAYX_BOOL_HOOK(ChangeWindowAttributes,ChangeWindowAttributes,(WindowPtr window,unsigned long mask),(window,mask))
+WAYX_VOID_HOOK(ReparentWindow,ReparentWindow,(WindowPtr window,WindowPtr parent),(window,parent))
+WAYX_VOID_HOOK(RestackWindow,RestackWindow,(WindowPtr window,WindowPtr sibling),(window,sibling))
+WAYX_VOID_HOOK(SetWindowPixmap,SetWindowPixmap,(WindowPtr window,PixmapPtr pixmap),(window,pixmap))
 #undef WAYX_BOOL_HOOK
 #undef WAYX_VOID_HOOK
 static void metadata_property(CallbackListPtr *list,void *closure,void *data) {
@@ -163,12 +172,12 @@ static void metadata_property(CallbackListPtr *list,void *closure,void *data) {
     if ((property->access_mode & (DixWriteAccess|DixDestroyAccess|DixRemoveAccess)) || property->delete) metadata_dirty=TRUE;
 }
 #define WAYX_SCREEN_HOOKS(X) \
-    X(CreateWindow) X(DestroyWindow) X(PositionWindow) X(RealizeWindow) \
-    X(UnrealizeWindow) X(ChangeWindowAttributes) X(ReparentWindow) \
-    X(RestackWindow) X(SetWindowPixmap)
+    X(CreateWindow,WAYX_CREATE_WINDOW_MEMBER) X(DestroyWindow,DestroyWindow) X(PositionWindow,PositionWindow) X(RealizeWindow,RealizeWindow) \
+    X(UnrealizeWindow,UnrealizeWindow) X(ChangeWindowAttributes,ChangeWindowAttributes) X(ReparentWindow,ReparentWindow) \
+    X(RestackWindow,RestackWindow) X(SetWindowPixmap,SetWindowPixmap)
 static void install_window_hooks(void) {
     window_hooks_installed=TRUE;
-#define INSTALL(name) saved_##name=screen->name;screen->name=wayx_##name;
+#define INSTALL(name,member) saved_##name=screen->member;screen->member=wayx_##name;
     WAYX_SCREEN_HOOKS(INSTALL)
 #undef INSTALL
     if(!AddCallback(&PropertyFilterCallback,metadata_property,NULL))
@@ -178,7 +187,7 @@ static void remove_window_hooks(void) {
     if(!window_hooks_installed) return;
     window_hooks_installed=FALSE;
     DeleteCallback(&PropertyFilterCallback,metadata_property,NULL);
-#define REMOVE(name) screen->name=saved_##name;
+#define REMOVE(name,member) screen->member=saved_##name;
     WAYX_SCREEN_HOOKS(REMOVE)
 #undef REMOVE
 }
