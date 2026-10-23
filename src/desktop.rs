@@ -1,6 +1,7 @@
+use crate::renderer::{Image, SharedGpu};
 use crate::window::{self as window_state, WindowState};
 use crate::{
-    backend::{Framebuffer, InputEvent, Rect, event},
+    backend::{Framebuffer, InputEvent, event},
     bridge::SharedBackend,
 };
 use anyhow::{Context, Result, anyhow};
@@ -23,347 +24,6 @@ use winit::{
     window::{Window, WindowId},
 };
 
-const SHADER: &str = r#"
-@group(0) @binding(0) var image: texture_2d<f32>;
-@group(0) @binding(1) var image_sampler: sampler;
-struct Output { @builtin(position) position: vec4<f32>, @location(0) uv: vec2<f32> };
-@vertex fn vs(@builtin(vertex_index) index: u32) -> Output {
-    var points=array<vec2<f32>,3>(vec2<f32>(-1.,-1.),vec2<f32>(3.,-1.),vec2<f32>(-1.,3.));
-    var out:Output; out.position=vec4<f32>(points[index],0.,1.);
-    out.uv=vec2<f32>((points[index].x+1.)*0.5, (1.-points[index].y)*0.5); return out;
-}
-@fragment fn fs(in:Output)->@location(0) vec4<f32> { return vec4<f32>(textureSample(image,image_sampler,in.uv).rgb, 1.); }
-"#;
-struct Gpu {
-    pipelines: std::sync::Mutex<HashMap<wgpu::TextureFormat, Arc<wgpu::RenderPipeline>>>,
-    shader: wgpu::ShaderModule,
-    pipeline_layout: wgpu::PipelineLayout,
-    binding_layout: wgpu::BindGroupLayout,
-    sampler: wgpu::Sampler,
-    queue: wgpu::Queue,
-    device: wgpu::Device,
-}
-impl Gpu {
-    async fn new(
-        instance: &wgpu::Instance,
-        surface: Option<&wgpu::Surface<'_>>,
-    ) -> Result<(Self, wgpu::Adapter)> {
-        let adapter=instance.request_adapter(&wgpu::RequestAdapterOptions {
-            power_preference:wgpu::PowerPreference::LowPower, compatible_surface:surface, force_fallback_adapter:false,
-        }).await.context("No usable GPU adapter (install a Vulkan/Metal/DX12 driver or Mesa software Vulkan)")?;
-        tracing::info!(adapter=?adapter.get_info(),"render adapter");
-        let (device, queue) = adapter
-            .request_device(
-                &wgpu::DeviceDescriptor {
-                    label: Some("WayX GPU"),
-                    required_features: wgpu::Features::empty(),
-                    required_limits: wgpu::Limits::downlevel_defaults()
-                        .using_resolution(adapter.limits()),
-                },
-                None,
-            )
-            .await?;
-        let layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-            label: None,
-            entries: &[
-                wgpu::BindGroupLayoutEntry {
-                    binding: 0,
-                    visibility: wgpu::ShaderStages::FRAGMENT,
-                    ty: wgpu::BindingType::Texture {
-                        sample_type: wgpu::TextureSampleType::Float { filterable: true },
-                        view_dimension: wgpu::TextureViewDimension::D2,
-                        multisampled: false,
-                    },
-                    count: None,
-                },
-                wgpu::BindGroupLayoutEntry {
-                    binding: 1,
-                    visibility: wgpu::ShaderStages::FRAGMENT,
-                    ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
-                    count: None,
-                },
-            ],
-        });
-        let sampler = device.create_sampler(&wgpu::SamplerDescriptor {
-            mag_filter: wgpu::FilterMode::Nearest,
-            min_filter: wgpu::FilterMode::Nearest,
-            ..Default::default()
-        });
-        let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
-            label: Some("WayX composition"),
-            source: wgpu::ShaderSource::Wgsl(SHADER.into()),
-        });
-        let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-            label: None,
-            bind_group_layouts: &[&layout],
-            push_constant_ranges: &[],
-        });
-        Ok((
-            Self {
-                device,
-                queue,
-                binding_layout: layout,
-                sampler,
-                shader,
-                pipeline_layout,
-                pipelines: std::sync::Mutex::new(HashMap::new()),
-            },
-            adapter,
-        ))
-    }
-    fn pipeline(&self, format: wgpu::TextureFormat) -> Result<Arc<wgpu::RenderPipeline>> {
-        let mut pipelines = self
-            .pipelines
-            .lock()
-            .map_err(|_| anyhow!("GPU pipeline cache poisoned"))?;
-        if let Some(pipeline) = pipelines.get(&format) {
-            return Ok(pipeline.clone());
-        }
-        let pipeline = self
-            .device
-            .create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-                label: Some("WayX framebuffer blit"),
-                layout: Some(&self.pipeline_layout),
-                vertex: wgpu::VertexState {
-                    module: &self.shader,
-                    entry_point: "vs",
-                    buffers: &[],
-                    compilation_options: Default::default(),
-                },
-                fragment: Some(wgpu::FragmentState {
-                    module: &self.shader,
-                    entry_point: "fs",
-                    targets: &[Some(wgpu::ColorTargetState {
-                        format,
-                        blend: None,
-                        write_mask: wgpu::ColorWrites::ALL,
-                    })],
-                    compilation_options: Default::default(),
-                }),
-                primitive: Default::default(),
-                depth_stencil: None,
-                multisample: Default::default(),
-                multiview: None,
-            });
-        let pipeline = Arc::new(pipeline);
-        pipelines.insert(format, pipeline.clone());
-        Ok(pipeline)
-    }
-}
-/// One instance, adapter and device for every native window in this serve.
-struct SharedGpu {
-    gpu: Gpu,
-    adapter: wgpu::Adapter,
-    instance: wgpu::Instance,
-    lost: Arc<std::sync::Mutex<Option<String>>>,
-}
-impl std::ops::Deref for SharedGpu {
-    type Target = Gpu;
-    fn deref(&self) -> &Gpu {
-        &self.gpu
-    }
-}
-impl SharedGpu {
-    fn check(&self) -> Result<()> {
-        let lost = self
-            .lost
-            .lock()
-            .map_err(|_| anyhow!("GPU device-loss state poisoned"))?;
-        if let Some(reason) = lost.as_ref() {
-            anyhow::bail!("Shared GPU failure: {reason}");
-        }
-        Ok(())
-    }
-    fn report(&self, windows: usize, phase: &str) {
-        if let Some(report) = self.instance.generate_report() {
-            let hub = report.hub_report(self.adapter.get_info().backend);
-            tracing::debug!(
-                phase,
-                windows,
-                surfaces = report.surfaces().num_kept_from_user,
-                devices = hub.devices.num_kept_from_user,
-                adapters = hub.adapters.num_kept_from_user,
-                textures = hub.textures.num_kept_from_user,
-                bindings = hub.bind_groups.num_kept_from_user,
-                pipelines = hub.render_pipelines.num_kept_from_user,
-                "GPU resource state"
-            );
-        }
-    }
-}
-struct Image {
-    texture: wgpu::Texture,
-    binding: wgpu::BindGroup,
-    pipeline: Arc<wgpu::RenderPipeline>,
-    width: u32,
-    height: u32,
-    revision: u64,
-    restore_overlay: bool,
-    overlay_rect: Option<Rect>,
-}
-impl Image {
-    fn new(gpu: &Gpu, width: u32, height: u32, format: wgpu::TextureFormat) -> Result<Self> {
-        let texture = gpu.device.create_texture(&wgpu::TextureDescriptor {
-            label: Some("XLibre framebuffer"),
-            size: wgpu::Extent3d {
-                width,
-                height,
-                depth_or_array_layers: 1,
-            },
-            mip_level_count: 1,
-            sample_count: 1,
-            dimension: wgpu::TextureDimension::D2,
-            format: wgpu::TextureFormat::Bgra8UnormSrgb,
-            usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
-            view_formats: &[],
-        });
-        let binding = gpu.device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: None,
-            layout: &gpu.binding_layout,
-            entries: &[
-                wgpu::BindGroupEntry {
-                    binding: 0,
-                    resource: wgpu::BindingResource::TextureView(
-                        &texture.create_view(&Default::default()),
-                    ),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 1,
-                    resource: wgpu::BindingResource::Sampler(&gpu.sampler),
-                },
-            ],
-        });
-        let pipeline = gpu.pipeline(format)?;
-        Ok(Self {
-            texture,
-            binding,
-            pipeline,
-            width,
-            height,
-            revision: 0,
-            restore_overlay: false,
-            overlay_rect: None,
-        })
-    }
-    fn invalidate_overlay(&mut self) {
-        self.restore_overlay = true;
-    }
-    fn upload(&mut self, gpu: &Gpu, fb: &Framebuffer) {
-        if self.revision == fb.revision && !self.restore_overlay {
-            return;
-        }
-        let full = [Rect {
-            x: 0,
-            y: 0,
-            width: fb.width,
-            height: fb.height,
-        }];
-        let changed = self.revision != fb.revision;
-        let rects = if self.revision == 0 || (changed && fb.damage.rects().is_empty()) {
-            &full[..]
-        } else if changed {
-            fb.damage.rects()
-        } else {
-            &[]
-        };
-        let restore = if self.restore_overlay {
-            self.overlay_rect.take()
-        } else {
-            None
-        };
-        let mut bytes = 0u64;
-        let mut rectangles = 0;
-        for rect in rects.iter().copied().chain(restore) {
-            let offset = ((rect.y as usize * fb.width as usize) + rect.x as usize) * 4;
-            gpu.queue.write_texture(
-                wgpu::ImageCopyTexture {
-                    texture: &self.texture,
-                    mip_level: 0,
-                    origin: wgpu::Origin3d {
-                        x: rect.x,
-                        y: rect.y,
-                        z: 0,
-                    },
-                    aspect: wgpu::TextureAspect::All,
-                },
-                &fb.pixels[offset..],
-                wgpu::ImageDataLayout {
-                    offset: 0,
-                    bytes_per_row: Some(fb.width * 4),
-                    rows_per_image: Some(fb.height),
-                },
-                wgpu::Extent3d {
-                    width: rect.width,
-                    height: rect.height,
-                    depth_or_array_layers: 1,
-                },
-            );
-            bytes += u64::from(rect.width) * u64::from(rect.height) * 4;
-            rectangles += 1;
-        }
-        tracing::trace!(bytes, rectangles, "framebuffer uploaded");
-        self.revision = fb.revision;
-        self.restore_overlay = false;
-    }
-    fn overlay(&mut self, gpu: &Gpu, preedit: &crate::preedit::PreeditImage, spot: (i16, i16)) {
-        let width = preedit.width.min(self.width);
-        let height = preedit.height.min(self.height);
-        let x = (spot.0.max(0) as u32).min(self.width - width);
-        let y = (spot.1.max(0) as u32).min(self.height - height);
-        self.overlay_rect = Some(Rect {
-            x,
-            y,
-            width,
-            height,
-        });
-        gpu.queue.write_texture(
-            wgpu::ImageCopyTexture {
-                texture: &self.texture,
-                mip_level: 0,
-                origin: wgpu::Origin3d { x, y, z: 0 },
-                aspect: wgpu::TextureAspect::All,
-            },
-            &preedit.pixels,
-            wgpu::ImageDataLayout {
-                offset: 0,
-                bytes_per_row: Some(preedit.width * 4),
-                rows_per_image: Some(preedit.height),
-            },
-            wgpu::Extent3d {
-                width,
-                height,
-                depth_or_array_layers: 1,
-            },
-        );
-    }
-    fn draw(&self, gpu: &Gpu, target: &wgpu::TextureView) {
-        let mut encoder = gpu
-            .device
-            .create_command_encoder(&wgpu::CommandEncoderDescriptor {
-                label: Some("WayX frame"),
-            });
-        {
-            let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-                label: None,
-                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                    view: target,
-                    resolve_target: None,
-                    ops: wgpu::Operations {
-                        load: wgpu::LoadOp::Clear(wgpu::Color::BLACK),
-                        store: wgpu::StoreOp::Store,
-                    },
-                })],
-                depth_stencil_attachment: None,
-                timestamp_writes: None,
-                occlusion_query_set: None,
-            });
-            pass.set_pipeline(&self.pipeline);
-            pass.set_bind_group(0, &self.binding, &[]);
-            pass.draw(0..3, 0..1);
-        }
-        gpu.queue.submit(Some(encoder.finish()));
-    }
-}
 struct Native {
     id: u32,
     incarnation: u64,
@@ -448,41 +108,8 @@ impl Native {
             gpu.check()?;
             (gpu.instance.create_surface(window.clone())?, gpu.clone())
         } else {
-            let instance = wgpu::Instance::new(wgpu::InstanceDescriptor {
-                backends: wgpu::util::backend_bits_from_env().unwrap_or(wgpu::Backends::all()),
-                ..Default::default()
-            });
-            let surface = instance.create_surface(window.clone())?;
-            let (gpu, adapter) = Gpu::new(&instance, Some(&surface)).await?;
-            let lost = Arc::new(std::sync::Mutex::new(None));
-            let failure = lost.clone();
-            let notify = wake.clone();
-            gpu.device.on_uncaptured_error(Box::new(move |error| {
-                if let Ok(mut failure) = failure.lock()
-                    && failure.is_none()
-                {
-                    *failure = Some(format!("uncaptured GPU error: {error}"));
-                }
-                notify();
-            }));
-            let failure = lost.clone();
-            let wake = wake.clone();
-            gpu.device.set_device_lost_callback(move |reason, message| {
-                if let Ok(mut failure) = failure.lock()
-                    && failure.is_none()
-                {
-                    *failure = Some(format!("device lost ({reason:?}): {message}"));
-                }
-                wake();
-            });
-            let gpu = Arc::new(SharedGpu {
-                gpu,
-                adapter,
-                instance,
-                lost,
-            });
+            let (surface, gpu) = SharedGpu::new(window.clone(), wake).await?;
             *shared = Some(gpu.clone());
-            tracing::info!("shared GPU device initialized");
             (surface, gpu)
         };
         anyhow::ensure!(
@@ -799,13 +426,14 @@ struct App {
     pending_move: Option<InputEvent>,
     wake_pending: Arc<AtomicBool>,
     ui_wake: crate::notify::UiWake,
-    selection_watch: Option<crate::selection::ReadinessWatch>,
+    session_watch: Option<crate::readiness::ReadinessWatch>,
     native: HashMap<u32, Native>,
     native_ids: HashMap<WindowId, u32>,
     gpu: Option<Arc<SharedGpu>>,
     gpu_retired: Arc<AtomicU64>,
     gpu_retirement_generation: u64,
     gpu_reported_generation: u64,
+    next_gpu_poll: Option<Instant>,
     clipboard: Option<arboard::Clipboard>,
     preedit_painter: Option<crate::preedit::Painter>,
     clipboard_revision: u64,
@@ -815,8 +443,8 @@ struct App {
     rootless: bool,
     frame_limit: Option<u32>,
     presented_frames: u32,
-    selection: Option<crate::selection::SelectionBridge>,
-    selection_config: Option<(u16, std::path::PathBuf)>,
+    session: Option<crate::x11_session::X11Session>,
+    session_config: Option<(u16, std::path::PathBuf)>,
     worker: Option<std::thread::JoinHandle<Result<i32>>>,
     layout_ready: Option<std::sync::mpsc::Sender<()>>,
     layout_dirty: Arc<AtomicBool>,
@@ -826,6 +454,14 @@ struct App {
     host_layout_watch: Option<HostLayoutWatch>,
 }
 impl App {
+    #[cfg(not(target_os = "windows"))]
+    fn layout_fallback(&self) -> bool {
+        #[cfg(all(unix, not(target_os = "macos")))]
+        let available = self.host_layout_watch.is_some();
+        #[cfg(not(all(unix, not(target_os = "macos"))))]
+        let available = false;
+        self.rootless && !available
+    }
     fn update_host_layout(&mut self, event_loop: &ActiveEventLoop) -> Result<()> {
         if !self.rootless {
             return Ok(());
@@ -949,36 +585,36 @@ impl App {
         Ok(())
     }
     fn sync_inner(&mut self, event_loop: &ActiveEventLoop) -> Result<()> {
-        if let Some(watch) = &self.selection_watch {
+        if let Some(watch) = &self.session_watch {
             watch.pause()?;
         }
         if self.finish_worker(event_loop)? {
             return Ok(());
         }
-        if self.selection.is_none()
+        if self.session.is_none()
             && self
                 .backend
                 .lock()
                 .unwrap()
                 .published_windows
                 .contains_key(&1)
-            && let Some((display, auth)) = self.selection_config.take()
+            && let Some((display, auth)) = self.session_config.take()
         {
-            let mut selection = crate::selection::SelectionBridge::connect_local(
+            let mut session = crate::x11_session::X11Session::connect_local(
                 display,
                 &auth,
                 self.backend.clone(),
             )?;
-            selection.enable_ime()?;
+            session.enable_ime()?;
             if self.rootless {
-                selection.enable_window_management()?;
+                session.enable_window_management()?;
             }
-            self.selection_watch = Some(selection.watch(self.ui_wake.clone())?);
-            self.selection = Some(selection);
+            self.session_watch = Some(session.watch(self.ui_wake.clone())?);
+            self.session = Some(session);
             tracing::debug!("internal X11 bridge ready");
         }
-        if let Some(selection) = &mut self.selection {
-            selection.tick()?;
+        if let Some(session) = &mut self.session {
+            session.tick()?;
         }
         let (windows, requested_focus) = {
             let mut backend = self
@@ -1015,6 +651,8 @@ impl App {
             gpu.device.poll(wgpu::Maintain::Poll);
             gpu.check()?;
             let completed = self.gpu_retired.load(Ordering::Acquire);
+            self.next_gpu_poll = (completed != self.gpu_retirement_generation)
+                .then(|| Instant::now() + Duration::from_millis(16));
             // An older completion cannot attest to resources dropped by a
             // newer batch. Report only once the latest retirement has finished.
             if completed == self.gpu_retirement_generation
@@ -1140,7 +778,7 @@ impl App {
             self.last_clipboard = Instant::now();
         }
         if let Some(ime) = self
-            .selection
+            .session
             .as_ref()
             .and_then(|selection| selection.ime.as_ref())
         {
@@ -1194,11 +832,11 @@ impl App {
                 native.window.request_redraw();
             }
         }
-        if let Some(selection) = &mut self.selection
-            && selection.queue_pending_event()?
+        if let Some(session) = &mut self.session
+            && session.queue_pending_event()?
         {
             (self.ui_wake)();
-        } else if let Some(watch) = &self.selection_watch {
+        } else if let Some(watch) = &self.session_watch {
             watch.arm()?;
         }
         Ok(())
@@ -1260,12 +898,8 @@ impl ApplicationHandler<()> for App {
         // and Windows use native notifications; other backends have a bounded
         // compatibility check independent of window movement or rendering.
         #[cfg(not(target_os = "windows"))]
-        if self.rootless && Instant::now() >= self.next_layout_check {
-            #[cfg(all(unix, not(target_os = "macos")))]
-            let fallback = self.host_layout_watch.is_none();
-            #[cfg(not(all(unix, not(target_os = "macos"))))]
-            let fallback = true;
-            layout_changed |= fallback;
+        if self.layout_fallback() && Instant::now() >= self.next_layout_check {
+            layout_changed = true;
             self.next_layout_check = Instant::now() + Duration::from_secs(1);
         }
         if layout_changed && let Err(error) = self.update_host_layout(event_loop) {
@@ -1281,18 +915,44 @@ impl ApplicationHandler<()> for App {
             self.error = Some(error);
             event_loop.exit();
         }
-        let mut deadline = self.last_clipboard + Duration::from_millis(250);
-        for native in self.native.values_mut() {
-            if let Some(retry) = native.retry_at {
-                if retry <= Instant::now() {
+        let now = Instant::now();
+        let retry = self
+            .native
+            .values_mut()
+            .filter_map(|native| {
+                let retry = native.retry_at?;
+                if retry <= now {
                     native.retry_at = None;
                     native.window.request_redraw();
+                    None
                 } else {
-                    deadline = deadline.min(retry);
+                    Some(retry)
                 }
-            }
-        }
-        event_loop.set_control_flow(ControlFlow::WaitUntil(deadline));
+            })
+            .min();
+        let deadline = retry
+            .into_iter()
+            .chain(
+                self.clipboard
+                    .as_ref()
+                    .map(|_| self.last_clipboard + Duration::from_millis(250)),
+            )
+            .chain(
+                self.session
+                    .as_ref()
+                    .and_then(|session| session.next_deadline()),
+            )
+            .chain(self.next_gpu_poll)
+            .min();
+        #[cfg(not(target_os = "windows"))]
+        let deadline = if self.layout_fallback() {
+            Some(deadline.map_or(self.next_layout_check, |deadline| {
+                deadline.min(self.next_layout_check)
+            }))
+        } else {
+            deadline
+        };
+        event_loop.set_control_flow(deadline.map_or(ControlFlow::Wait, ControlFlow::WaitUntil));
     }
     fn window_event(&mut self, event_loop: &ActiveEventLoop, window_id: WindowId, ev: WindowEvent) {
         let Some(id) = self.native_ids.get(&window_id) else {
@@ -1394,9 +1054,10 @@ impl ApplicationHandler<()> for App {
                 if native.occluded || native.window.is_minimized().unwrap_or(false) {
                     return;
                 }
-                let uploaded = {
+                let (uploaded, lock_held) = {
                     let mut backend = self.backend.lock().unwrap();
-                    backend
+                    let start = Instant::now();
+                    let uploaded = backend
                         .windows
                         .get_mut(&id)
                         .filter(|window| window.incarnation == native.incarnation)
@@ -1404,8 +1065,14 @@ impl ApplicationHandler<()> for App {
                             native.upload(&window.framebuffer)?;
                             window.framebuffer.damage.clear();
                             Ok::<_, anyhow::Error>(())
-                        })
+                        });
+                    (uploaded, start.elapsed())
                 };
+                tracing::trace!(
+                    window = id,
+                    microseconds = lock_held.as_micros() as u64,
+                    "backend upload lock held"
+                );
                 if let Some(uploaded) = uploaded {
                     match uploaded.and_then(|()| native.present()) {
                         Err(error) => {
@@ -1478,7 +1145,7 @@ impl ApplicationHandler<()> for App {
                     native.window.request_redraw();
                     native.pressed_keys.clear();
                     if let Some(ime) = self
-                        .selection
+                        .session
                         .as_mut()
                         .and_then(|selection| selection.ime.as_mut())
                         && let Err(error) = ime.cancel(id)
@@ -1522,7 +1189,7 @@ impl ApplicationHandler<()> for App {
                 native.image.invalidate_overlay();
                 native.window.request_redraw();
                 if let Some(ime) = self
-                    .selection
+                    .session
                     .as_mut()
                     .and_then(|selection| selection.ime.as_mut())
                     && let Err(error) = ime.commit(id, &text)
@@ -1545,7 +1212,7 @@ impl ApplicationHandler<()> for App {
                 native.image.invalidate_overlay();
                 native.window.request_redraw();
                 if let Some(ime) = self
-                    .selection
+                    .session
                     .as_mut()
                     .and_then(|selection| selection.ime.as_mut())
                 {
@@ -1577,7 +1244,7 @@ impl ApplicationHandler<()> for App {
                 native.image.invalidate_overlay();
                 native.window.request_redraw();
                 if let Some(ime) = self
-                    .selection
+                    .session
                     .as_mut()
                     .and_then(|selection| selection.ime.as_mut())
                     && let Err(error) = ime.cancel(id)
@@ -1711,7 +1378,7 @@ pub fn run(
     demo: bool,
     rootless: bool,
     worker: Option<std::thread::JoinHandle<Result<i32>>>,
-    selection_config: Option<(u16, std::path::PathBuf)>,
+    session_config: Option<(u16, std::path::PathBuf)>,
     frame_limit: Option<u32>,
     layout_ready: Option<std::sync::mpsc::Sender<()>>,
 ) -> Result<()> {
@@ -1741,7 +1408,7 @@ pub fn run(
     let mut app = App {
         wake_pending,
         ui_wake,
-        selection_watch: None,
+        session_watch: None,
         pending_move: None,
         backend,
         native: HashMap::new(),
@@ -1750,6 +1417,7 @@ pub fn run(
         gpu_retired: Arc::new(AtomicU64::new(0)),
         gpu_retirement_generation: 0,
         gpu_reported_generation: 0,
+        next_gpu_poll: None,
         clipboard: None,
         preedit_painter: None,
         clipboard_revision: 0,
@@ -1759,8 +1427,8 @@ pub fn run(
         rootless,
         frame_limit,
         presented_frames: 0,
-        selection: None,
-        selection_config,
+        session: None,
+        session_config,
         worker,
         layout_ready,
         layout_dirty,
@@ -1780,8 +1448,8 @@ pub fn run(
         gpu.device.poll(wgpu::Maintain::Wait);
     }
     // Close the internal selection client, then request orderly server teardown.
-    app.selection_watch.take();
-    app.selection.take();
+    app.session_watch.take();
+    app.session.take();
     if let Some(worker) = app.worker.take() {
         if !worker.is_finished() {
             let mut backend = app.backend.lock().unwrap();
@@ -1811,115 +1479,12 @@ pub fn run(
     }
     Ok(())
 }
-/// A real offscreen shader/texture/readback check; no native window is needed.
-pub async fn gpu_smoke() -> Result<()> {
-    let instance = wgpu::Instance::new(wgpu::InstanceDescriptor {
-        backends: wgpu::util::backend_bits_from_env().unwrap_or(wgpu::Backends::all()),
-        ..Default::default()
-    });
-    let (gpu, _) = Gpu::new(&instance, None).await?;
-    let format = wgpu::TextureFormat::Rgba8UnormSrgb;
-    let mut image = Image::new(&gpu, 2, 2, format)?;
-    let mut fb = Framebuffer::new(2, 2)?;
-    fb.upload(
-        Rect {
-            x: 0,
-            y: 0,
-            width: 2,
-            height: 2,
-        },
-        8,
-        &[0, 0, 255, 0, 0, 255, 0, 0, 255, 0, 0, 0, 255, 255, 255, 0],
-    )?;
-    image.upload(&gpu, &fb);
-    let target = gpu.device.create_texture(&wgpu::TextureDescriptor {
-        label: Some("smoke target"),
-        size: wgpu::Extent3d {
-            width: 2,
-            height: 2,
-            depth_or_array_layers: 1,
-        },
-        mip_level_count: 1,
-        sample_count: 1,
-        dimension: wgpu::TextureDimension::D2,
-        format,
-        usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
-        view_formats: &[],
-    });
-    // Verify the IME overlay's BGRA color and edge clipping, then erase it
-    // without changing the X11 framebuffer or relying on new remote damage.
-    for overlay in [false, true, false] {
-        image.invalidate_overlay();
-        image.upload(&gpu, &fb);
-        if overlay {
-            image.overlay(
-                &gpu,
-                &crate::preedit::PreeditImage {
-                    width: 1,
-                    height: 1,
-                    pixels: vec![0, 255, 255, 255],
-                },
-                (i16::MAX, i16::MAX),
-            );
-        }
-        image.draw(&gpu, &target.create_view(&Default::default()));
-        let buffer = gpu.device.create_buffer(&wgpu::BufferDescriptor {
-            label: None,
-            size: 512,
-            usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
-            mapped_at_creation: false,
-        });
-        let mut encoder = gpu.device.create_command_encoder(&Default::default());
-        encoder.copy_texture_to_buffer(
-            target.as_image_copy(),
-            wgpu::ImageCopyBuffer {
-                buffer: &buffer,
-                layout: wgpu::ImageDataLayout {
-                    offset: 0,
-                    bytes_per_row: Some(256),
-                    rows_per_image: Some(2),
-                },
-            },
-            wgpu::Extent3d {
-                width: 2,
-                height: 2,
-                depth_or_array_layers: 1,
-            },
-        );
-        gpu.queue.submit(Some(encoder.finish()));
-        let (tx, rx) = std::sync::mpsc::channel();
-        buffer.slice(..).map_async(wgpu::MapMode::Read, move |r| {
-            let _ = tx.send(r);
-        });
-        gpu.device.poll(wgpu::Maintain::Wait);
-        rx.recv()??;
-        let bytes = buffer.slice(..).get_mapped_range();
-        anyhow::ensure!(
-            bytes[..8] == [255, 0, 0, 255, 0, 255, 0, 255]
-                && bytes[256..260] == [0, 0, 255, 255]
-                && bytes[260..264]
-                    == if overlay {
-                        [255, 255, 0, 255]
-                    } else {
-                        [255, 255, 255, 255]
-                    },
-            "GPU framebuffer color/orientation mismatch"
-        );
-    }
-    anyhow::ensure!(
-        fb.pixels[12..16] == [255, 255, 255, 0],
-        "IME modified remote framebuffer"
-    );
-    tracing::info!(
-        "GPU texture upload, IME overlay/restore, shader composition and readback passed"
-    );
-    Ok(())
-}
+pub use crate::renderer::gpu_smoke;
 
 #[cfg(all(unix, not(target_os = "macos")))]
 struct HostLayoutWatch {
     // Drop the watcher before releasing its connection.
-    watch: crate::selection::ReadinessWatch,
+    watch: crate::readiness::ReadinessWatch,
     conn: Arc<x11rb::rust_connection::RustConnection>,
 }
 #[cfg(all(unix, not(target_os = "macos")))]
@@ -1940,7 +1505,7 @@ impl HostLayoutWatch {
         )?
         .check()?;
         let conn = Arc::new(conn);
-        let watch = crate::selection::ReadinessWatch::new(conn.clone(), wake)?;
+        let watch = crate::readiness::ReadinessWatch::new(conn.clone(), wake)?;
         watch.arm()?;
         Ok(Self { watch, conn })
     }

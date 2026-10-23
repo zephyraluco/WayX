@@ -18,7 +18,11 @@ flowchart TB
 
 主线程拥有 winit EventLoop、原生窗口、各窗口 surface、进程共享的 wgpu device/queue、本地剪贴板，以及非阻塞轮询的 X11 Selection 适配器。XLibre 的 `dix_main` 位于独立工作线程；所有 X Server 数据结构只在该线程访问。C DDX 将帧缓冲借用到 Rust 回调中，Rust 在调用返回前完成有界复制，不持有 C 缓冲指针。
 
-共享状态由 `Arc<Mutex<Backend>>` 管理。ABI 使用不透明 handle 和完整 `WayxApi` 回调表，带版本和结构体尺寸检查。禁止把 Rust 对象、字符串或 Vec 布局当成 C 类型。销毁 handle 必须等待所有调用结束。无效非空指针无法由 ABI 安全验证，调用方仍有义务保证指针有效。
+共享状态由 `Arc<Mutex<Backend>>` 管理。DDX 的工作状态与 UI 已提交的不可变元数据分离；
+`output_flush` 只为本批变化的窗口发布 Arc 快照。UI 在短锁内取得快照，锁外执行原生
+窗口创建、属性设置、剪贴板调用和 Surface 获取/呈现。像素上传仍在锁内借用 framebuffer，
+不为缩短锁而增加整帧副本；上传后立即解锁。窗口 incarnation 区分同批销毁后复用的 XID，
+避免复用旧原生窗口或向新窗口投递旧输入。ABI 使用不透明 handle 和完整 `WayxApi` 回调表，带版本和结构体尺寸检查。禁止把 Rust 对象、字符串或 Vec 布局当成 C 类型。销毁 handle 必须等待所有调用结束。无效非空指针无法由 ABI 安全验证，调用方仍有义务保证指针有效。
 
 XLibre 安装的进程级信号处理器可能在工作线程返回后仍存在，因此客户端将核心库保持加载至进程退出。嵌入模式在支持 setitimer 的平台禁用全局调度定时器；原生窗口关闭或 UI 出错后请求 XLibre 退出并等待工作线程结束。
 
@@ -26,7 +30,13 @@ XLibre 安装的进程级信号处理器可能在工作线程返回后仍存在�
 
 当前 C DDX 复用固定版本 XLibre VFB 的软件屏幕初始化和输入设备。X11 请求、资源、扩展、Pixmap 以及 Pixman 绘图都由真正的 XLibre 核心实现。屏幕限定为单个 depth-24、32-bpp、little-endian XRGB8888 framebuffer。
 
-Damage 记录在屏幕 Pixmap 上。8 毫秒定时器将受损矩形和实际 stride 传给 Rust。Rust 校验矩形、行跨度与内存范围，将 XRGB alpha 归一化为 255，并合并待呈现的 Damage。wgpu 只上传受损纹理区域，通过全屏三角形和纹理采样呈现；rootful 单输出窗口大小变化通过 RandR 重建帧缓冲；rootless 则更新对应 X11 窗口的几何并重新分配 Composite Pixmap。
+Damage 记录在屏幕或重定向窗口 Pixmap 上。XLibre BlockHandler 与输入唤醒回调在
+批次边界传递受损矩形及实际 stride，没有固定帧定时器。Rust 校验并逐行复制原始 BGRX，
+不逐像素改写 X 字节。Damage 保留最多 32 个上传区域，按合并面积与调用开销估计合并，
+区域过多或更新密集时退化为整帧。wgpu 保持 Bgra8UnormSrgb 纹理与现有颜色语义，
+fragment shader 强制输出 alpha=1。IME 变化恢复旧覆盖区域，不重置像素版本；resize
+后的像素版本继续递增，避免尺寸变回原值时漏传新图像。rootful 单输出 resize 通过
+RandR 重建 framebuffer；rootless resize 更新对应窗口和 Composite Pixmap。
 
 内存上限：单帧缓冲 256 MiB，所有窗口总计 512 MiB、最多 1024 个窗口，单轴不超过 16384。显卡自身能力可能更低。Rust 的窗口模型维护 ID、父子关系、标题、可见性、焦点和递归销毁，默认 DDX 注册整个 X 屏幕；`--rootless` 则由 Composite 手动重定向根窗口的子窗口，将每个顶层窗口的独立 Pixmap 注册到 Rust 窗口模型。Damage 相对 Pixmap 的坐标经边框偏移校正后上传；嵌套子窗口保留在同一 Pixmap 中。窗口销毁和 Pixmap 重建会解除 Damage 跟踪，避免继续访问已释放的服务器对象。
 
@@ -36,8 +46,9 @@ DDX 替换 VFB 的尺寸回调，为每次改变分配新的有界软件帧缓�
 原地更新屏幕 Pixmap 头部及 root clip，刷新 Rust 帧缓冲和 RandR 通知后释放旧存储。
 默认内存模式支持动态尺寸；文件映射模式不支持。Native 单输出桌面 resize 同时更新
 输出模式；多输出桌面由 RandR 客户端管理布局，避免宿主 resize 隐式重排多个输出。
-`-wayx-monitor WxH+X+Y` 定义最多 16 个启动输出并激活相应 CRTC；屏幕尺寸由布局
-包围区域决定。宿主显示器自动同步及每屏 DPI 尚未实现。
+`-wayx-monitor WxH+X+Y` 为手工桌面定义最多 16 个启动输出并激活相应 CRTC；屏幕尺寸
+由布局包围区域决定。原生 rootless 自动跟随宿主物理显示器布局；每屏独立 DPI 语义
+仍未实现。
 
 ## 客户端软件 OpenGL
 
@@ -64,7 +75,10 @@ GL dispatch 时意外执行绘图。此路径不提供服务端间接 GL、DRI2/
 
 ## 窗口管理
 
-Rust 内部 X11 连接同时驱动 Selection 与 WM_S0/SubstructureRedirect，避免两套事件消费者。处理 MapRequest、ConfigureRequest、常用 EWMH ClientMessage，维护客户端列表、堆叠顺序和活动窗口。DDX 将 ICCCM 尺寸约束、瞬态关系、坐标及窗口状态以固定 64 字节结构同步到 Rust；原生 MOVE/RESIZE/STATE 回到 C 的服务器线程执行。新建窗口保持隐藏，直到显式映射，避免未完成初始化的根桌面被呈现。
+`x11_session.rs` 拥有内部 X11 连接及唯一事件消费者，分发 Selection、XIM 与
+WM_S0/SubstructureRedirect。`selection.rs` 只管理 CLIPBOARD 转换和 INCR 生命周期，
+`readiness.rs` 管理带代次的一次性可读通知。单次会话 tick 最多处理 256 个事件，剩余
+事件在重新 arm 前保留并继续唤醒，避免协议流量持续占用 UI。处理 MapRequest、ConfigureRequest、常用 EWMH ClientMessage，维护客户端列表、堆叠顺序和活动窗口。DDX 将 ICCCM 尺寸约束、瞬态关系、坐标及窗口状态以固定 64 字节结构同步到 Rust；原生 MOVE/RESIZE/STATE 回到 C 的服务器线程执行。新建窗口保持隐藏，直到显式映射，避免未完成初始化的根桌面被呈现。
 
 原生关闭先发送 WM_DELETE_WINDOW；未声明协议时终止该 X11 客户端。鼠标点击提升并聚焦普通窗口，hover 不改变层级。override-redirect 保留弹出行为。Linux X11 宿主验证了双向几何与瞬态父窗口关系；Wayland 全局定位受协议限制，macOS/Wayland 的原生 owner 关系仍需专用实现及原生验证。ABI v5 拒绝旧版本插件，升级必须重建核心。
 
@@ -119,18 +133,22 @@ Rootless 集成测试额外覆盖完全遮挡下绘制、边框坐标、子窗�
 ## 更新调度与线程唤醒
 
 XLibre 在线程自己的 BlockHandler 批量处理输入及累计 Damage，不再由固定 8 ms 定时器扫描。
-窗口生命周期钩子和属性写入回调标记元数据；只在标记后读取标题/窗口属性。
+窗口生命周期变化才重新收集顶层集合。按 XID 索引的窗口记录持有几何、约束、标题、
+像素分类脏标记和去重队列；Damage NonEmpty 回调只入队，不在绘图调用栈中上传。
+移动使用缓存约束，只发布最终几何；标题变化不读取约束，无关属性不产生元数据工作。
+UI 对装饰、尺寸约束、层级与状态分别比较，不因 x/y 变化重复设置宿主窗口属性。
 C Bridge 仅对实际输出变化设置 pending，由 output_flush 合并通知 UI；空批次不通知。
 
-ABI v4 保留 v3 的 input_fd、input_ack、output_flush，并追加 window_geometry。input_fd 返回 Backend 拥有的回环
+ABI v5 保留 v3 的 input_fd、input_ack、output_flush、v4 的 window_geometry，并提供 desktop_layout。input_fd 返回 Backend 拥有的回环
 socket，DDX 仅注册/注销，不关闭；生产者在队列入队后写入唤醒字节，消费者先确认
 通知再处理有界输入批次，未处理完的输入重新触发通知。队列和通知状态由同一锁保护。
 
 UI 使用 EventLoopProxy 的合并事件，消费前清除 pending，避免发布/清除顺序导致丢唤醒。
 内部 X11 连接由一次性 readiness watcher 唤醒，watcher 不读取协议数据；UI 消费事件后
 重新注册 readiness。销毁时先停止 watcher 并注销，再释放连接。工作线程完成（含失败）
-同样通知 UI。仅保留原生剪贴板兼容检查的 250 ms 截止时间与暂时性 surface 失败的
-按需重试截止时间；正常静止窗口不提交画面。系统曝光/恢复、尺寸及 IME 变化仍能重绘。
+同样通知 UI。UI 汇总实际启用的原生剪贴板 250 ms 检查、Selection 传输超时、显示器兼容检查、
+Surface 按需重试，以及有待回收 GPU 批次时的非阻塞轮询截止时间；无维护任务时
+使用 ControlFlow::Wait。正常静止窗口不提交画面。系统曝光/恢复、尺寸及 IME 变化仍能重绘。
 
 ### 避免协议应答触发自激唤醒
 
@@ -243,3 +261,15 @@ serve 退出。零窗口启动仍不初始化 GPU；最后一个窗口关闭也�
 工作集与私有提交量，Linux 采样 RSS 与私有驻留页；预热后末三次平均私有内存相对
 前三次的增长预算为 32 MiB。此预算用于拦截持续增长，不要求回到全新进程基线；
 驱动/分配器允许缓存，实际 Windows 驱动仍需实机验证。
+
+## 模块与验证边界
+
+`desktop.rs` 编排原生窗口与输入；`geometry.rs` 独立管理双向几何和已发出的尺寸目标；
+`renderer.rs` 拥有设备创建、故障处理、管线缓存、上传与离屏读回验证；`damage.rs`
+管理有界区域。宿主特有的显示器通知仍在平台适配层。C ABI 保持 v5，旧回调槽保留
+用于现有调用方；DDX 的主几何路径只使用完整 window_geometry 快照。
+
+真实 rootless 测试观察 ABI 输出，断言移动不发布其他窗口元数据、不读取标题，标题
+不更新几何，无关属性不产生输出；原生拖动测试同时断言不回拉、不改变桌面布局、
+不重复应用尺寸约束。TRACE 日志提供 framebuffer 上传字节/区域数和 Backend 上传锁
+持有时间。Linux 的协议、原生呈现和内存证据不能代替 Windows/macOS 实机验收。

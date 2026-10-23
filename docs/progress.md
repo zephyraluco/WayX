@@ -7,8 +7,8 @@
 | 1 | Rootless 逐窗口映射 | 已实现，Linux 验证通过 | Composite 独立 Pixmap、完全遮挡下绘制、嵌套子窗口、输入路由、map/unmap/resize/destroy；实际两个原生窗口与独立关闭 |
 | 2 | 窗口管理 | Linux X11 已实现并验证；其他宿主平台待验收 | 双向移动/resize、焦点与层级、WM_DELETE_WINDOW、ICCCM 大小约束、瞬态/弹出窗口 |
 | 3 | Windows/macOS XLibre 核心 | 已实现，Windows/macOS 原生 CI 通过 | 两个平台核心的真实编译、链接、打包和 GUI/协议验证；不以 Rust 静态检查代替 |
-| 4 | IME/XIM | 待实现 | 中日韩组合输入与文本提交到真实 X11 客户端 |
-| 5 | 平滑滚动 | 待实现 | 亚单位滚动累积、方向、横向滚动、输入顺序 |
+| 4 | IME/XIM | 已实现，Linux 协议验证通过；宿主输入法待交互验收 | Unicode 提交、焦点生命周期、回调预编辑及本地覆盖层 |
+| 5 | 平滑滚动 | 已实现，Linux 协议验证通过；跨平台交互待验收 | XI2 亚单位滚动、双轴方向、兼容按钮与输入顺序 |
 | 6 | 完整剪贴板 | 待实现 | 图片、文件列表、PRIMARY、持久化及已有文本/INCR 回归 |
 | 7 | SSH 使用体验 | 部分实现 | 密码/私钥认证已实现；Agent、OpenSSH 配置、ProxyJump、重连和连接管理待完成 |
 | 8 | 显示扩展 | 部分实现，Linux 验证通过 | Rootless 自动宿主布局、负坐标、原点变更、多输出、准确指针与拖动零 RandR；Windows/macOS 新增路径待原生 CI 验证，其他像素格式待实现 |
@@ -52,7 +52,7 @@
   `WAYX_XKB_DIR` / `WAYX_XKB_BIN_DIR` 支持搬移后的 XKB 数据与工具定位。
 
 此项不代表第二项在 Windows/macOS 的逐窗口原生交互均已验收，也不代表第九项
-正式安装器、可信签名与更新已经完成。第四项 IME/XIM 尚未开始。
+正式安装器、可信签名与更新已经完成。IME/XIM 的后续实现状态见上表和架构文档。
 
 ## 验证中发现的回归
 
@@ -94,3 +94,18 @@
 - Linux Vulkan 软件驱动：双窗口独立关闭、resize、200×200/1600×1000 各预热四轮再测十二轮，设备计数保持一套；回收完成后的 Surface/纹理/绑定组归零，大窗口测量阶段私有驻留增长约 0.1 MiB。
 - GPU smoke、原生 rootful/rootless、GLX、CPU 和持续重绘拖动回归通过。Linux/Windows CI 增加生命周期资源及内存增长预算；Windows 私有提交量与实际 Intel 驱动仍待原生 CI/实机确认。
 - 此项不改变 C ABI v5，也不要求关闭全部窗口后回到 GPU 初始化前的内存基线。
+
+## 全局重构
+
+- `97016d6`：XID 原生窗口索引、元数据快照和属性差量应用；Surface 获取/呈现、
+  窗口创建与原生剪贴板调用移出 Backend 锁。
+- `5a17d3d`：DDX 按窗口分类脏队列、缓存约束、独立生命周期扫描；真实 ABI 测试
+  断言移动、标题和无关属性的输出范围。
+- `75c9438`：输出提交不可变元数据、XID incarnation、连续像素版本；ResizeSync
+  统一持有尺寸目标发出状态；拖动不重复设置原生约束。
+- `c0e4b5b`：有界稀疏 Damage、shader 不透明 alpha、IME 旧覆盖区域局部恢复。
+- 模块整理：渲染器、X11 会话分发、Selection 服务和 readiness 分离；汇总有实际
+  任务的维护截止时间，无任务时等待通知。C ABI 保持 v5。
+
+本轮本地验收使用 Linux X11 与 Mesa 软件 Vulkan；Windows/macOS 交由相同提交的
+原生 CI 验证，实际 Windows 驱动内存与宿主输入法仍需现场验收。

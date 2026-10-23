@@ -13,7 +13,9 @@
 | `src/backend.rs` | 窗口生命周期、父子关系、焦点、帧缓冲、Damage、输入队列、剪贴板状态 |
 | `src/bridge.rs`, `include/wayx.h` | 版本化 C ABI、回调表、缓冲区校验、线程同步 |
 | `ddx/` | XLibre 软件 framebuffer DDX、Damage、键鼠输入接入 |
-| `src/desktop.rs` | winit 原生窗口/事件、wgpu 纹理上传与呈现、本地剪贴板 |
+| `src/desktop.rs`, `src/geometry.rs` | 原生窗口/事件编排、双向几何同步、本地剪贴板 |
+| `src/renderer.rs`, `src/damage.rs` | 共享 GPU、稀疏纹理上传、呈现、IME 局部恢复 |
+| `src/x11_session.rs`, `src/readiness.rs` | 单连接事件分发、一次性可读通知、维护截止时间 |
 | `src/ime.rs` | `@im=wayx` XIM 服务、输入焦点路由、Unicode 提交及预编辑回调 |
 | `src/selection.rs` | X11 CLIPBOARD 的 UTF8_STRING/STRING/TARGETS/TIMESTAMP/INCR 转换 |
 | `src/ssh.rs` | russh 会话、主机密钥校验、X11 channel、认证 cookie 替换 |
@@ -377,7 +379,9 @@ cargo test --locked --test glx -- --ignored --nocapture
 每 16 ms 对所有窗口提交画面。DDX 在 X Server 的 BlockHandler 中批量同步 Damage；
 输入队列通过可监听的回环 socket 唤醒 XLibre，输出变化通过合并通知唤醒 winit。
 内部 X11 连接使用一次性 socket readiness 通知；原生剪贴板兼容检查仍每 250 ms
-执行，不触发静止画面重绘。窗口元数据由生命周期钩子及属性写入标记更新。
+执行，不触发静止画面重绘。DDX 按窗口分类标记几何、约束、标题和像素，只处理脏队列。
+UI 仅消费批次提交的不可变元数据；窗口创建、系统属性调用及 Surface 呈现不持有
+Backend 锁。XID 复用通过 incarnation 区分，避免复用已销毁窗口的原生状态。
 
 ABI v5 保留完整几何快照的原子发布，并增加宿主桌面布局接口；客户端和 XLibre 核心须一同更新，旧核心不能与新客户端混用。
 `--frames` 是自动化测试模式，会主动请求后续帧，不用于测量空闲呈现行为。
@@ -401,3 +405,8 @@ Device/Queue；窗口各自保留 Surface 和图像纹理。关闭窗口会释�
 用 `scripts/test-idle-cpu.py --binary ... --core ... --gpu-cycles` 验证反复开关、
 双窗口独立关闭和资源计数；Linux 需要原生 X11 宿主。工作集不要求回到 GPU 初始化前，
 验收重点为预热后不再随窗口开关线性增长。Windows CI 同时检查私有提交量。
+
+上传保留最多 32 个 Damage 区域，密集更新回退整帧；CPU 保留 BGRX 原始字节，着色器
+输出不透明 alpha，颜色空间保持 sRGB。IME 更新只恢复旧覆盖区域。需要分析工作量时，
+启用 `RUST_LOG=wayx=trace` 可查看上传字节/区域数及 Backend 上传锁持有微秒数；
+详细日志会产生额外开销，不用于最终性能采样。

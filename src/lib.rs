@@ -31,3 +31,11 @@ pub mod notify;
 mod geometry;
 
 pub mod damage;
+
+#[cfg(feature = "desktop")]
+mod readiness;
+#[cfg(feature = "desktop")]
+pub mod x11_session;
+
+#[cfg(feature = "desktop")]
+mod renderer;
