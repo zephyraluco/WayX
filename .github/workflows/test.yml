@@ -19,6 +19,8 @@ jobs:
     - uses: Swatinem/rust-cache@v2.9.3
     - name: Install desktop dependencies
       run: sudo apt-get update && sudo apt-get install -y libx11-dev libxkbcommon-dev libwayland-dev
+    - name: Release workflow regression tests
+      run: node --test scripts/test-release-workflow.cjs
     - name: Format
       run: cargo fmt --check
     - name: Clippy

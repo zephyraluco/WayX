@@ -22,7 +22,7 @@ jobs:
   publish:
     name: Publish runtime packages
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 105
     permissions:
       contents: write
       actions: read
@@ -43,24 +43,40 @@ jobs:
             object = (await github.rest.git.getTag({...context.repo, tag_sha:object.sha})).data.object;
           if (object.type !== 'commit') throw new Error('Tag does not resolve to a commit');
           const sha = object.sha;
-          const eligible = run => run.head_sha === sha && run.conclusion === 'success' &&
+          const matches = (run, workflow) => run.head_sha === sha &&
             ['push','workflow_dispatch'].includes(run.event) && run.head_branch === repository.default_branch &&
-            run.head_repository?.full_name === repository.full_name;
-          let integration;
-          if (process.env.INTEGRATION_RUN_ID) {
-            const id = Number(process.env.INTEGRATION_RUN_ID);
-            if (!Number.isSafeInteger(id) || id<=0) throw new Error('Invalid integration run ID');
-            integration = (await github.rest.actions.getWorkflowRun({...context.repo, run_id:id})).data;
-          } else {
-            const runs = await github.paginate(github.rest.actions.listWorkflowRuns,
-              {...context.repo, workflow_id:'integration.yml', head_sha:sha, status:'success', per_page:100});
-            integration = runs.find(eligible);
-          }
-          if (!integration || !eligible(integration) || integration.path.split('@')[0] !== '.github/workflows/integration.yml')
-            throw new Error('Require a successful default-branch Integration run for this exact tagged commit');
-          const tests = await github.paginate(github.rest.actions.listWorkflowRuns,
-            {...context.repo, workflow_id:'test.yml', head_sha:sha, status:'success', per_page:100});
-          if (!tests.some(eligible)) throw new Error('Rust unit tests have not passed for the tagged commit');
+            run.head_repository?.full_name === repository.full_name &&
+            run.path.split('@')[0] === '.github/workflows/'+workflow;
+          const discoveryDeadline = Date.now() + 2 * 60 * 1000;
+          const deadline = Date.now() + 90 * 60 * 1000;
+          const waitFor = async (workflow, requestedId) => {
+            for (;;) {
+              let runs;
+              if (requestedId) {
+                const id = Number(requestedId);
+                if (!Number.isSafeInteger(id) || id<=0) throw new Error('Invalid integration run ID');
+                const run = (await github.rest.actions.getWorkflowRun({...context.repo, run_id:id})).data;
+                if (!matches(run, workflow)) throw new Error('Selected run does not match the tagged commit/default branch/workflow');
+                runs = [run];
+              } else {
+                runs = (await github.paginate(github.rest.actions.listWorkflowRuns,
+                  {...context.repo, workflow_id:workflow, head_sha:sha, per_page:100})).filter(run => matches(run, workflow));
+              }
+              const passed = runs.find(run => run.status === 'completed' && run.conclusion === 'success');
+              if (passed) return passed;
+              if (!runs.length && Date.now() >= discoveryDeadline)
+                throw new Error('No default-branch '+workflow+' run for the tagged commit; push the commit to the default branch first');
+              if (runs.length && runs.every(run => run.status === 'completed'))
+                throw new Error(workflow+' failed for the tagged commit: '+runs.map(run => run.conclusion).join(', '));
+              if (Date.now() >= deadline) throw new Error('Timed out waiting for tagged commit validation');
+              core.info('Waiting for '+workflow+' on '+sha);
+              await new Promise(resolve => setTimeout(resolve, 30000));
+            }
+          };
+          const [integration] = await Promise.all([
+            waitFor('integration.yml', process.env.INTEGRATION_RUN_ID),
+            waitFor('test.yml')
+          ]);
           const artifacts = await github.paginate(github.rest.actions.listWorkflowRunArtifacts,
             {...context.repo, run_id:integration.id, per_page:100});
           for (const platform of ['linux','windows','macos']) {
