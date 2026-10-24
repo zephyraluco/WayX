@@ -102,10 +102,10 @@ class PackageTests(unittest.TestCase):
         self.manifest["files"]["bin/wayx"] = digest(binary)
         self.save()
         with patch.dict(os.environ, {"GITHUB_OUTPUT":str(Path(self.directory.name)/"outputs")}):
-            result = archive(self.root, Path(self.directory.name)/"archives", "core-runtime")
+            result = archive(self.root, Path(self.directory.name)/"archives", "wayx")
         label = {"win32":"windows", "darwin":"macos"}.get(sys.platform, sys.platform)
         arch = {"x86_64":"x64", "aarch64":"arm64"}[self.manifest["arch"]]
-        self.assertEqual(result.name, f"{label}-core-runtime-{arch}-{self.sha}.zip")
+        self.assertEqual(result.name, f"wayx-{label}-{arch}-{self.sha}.zip")
         self.assertEqual(list(result.parent.iterdir()), [result])
         with zipfile.ZipFile(result) as bundle:
             self.assertEqual(set(bundle.namelist()), {"fixture", "manifest.json", "bin/wayx"})
@@ -115,9 +115,12 @@ class PackageTests(unittest.TestCase):
 
     def test_artifact_name_does_not_create_an_archive(self):
         with patch.dict(os.environ, {"GITHUB_OUTPUT":str(Path(self.directory.name)/"outputs")}):
-            name = artifact_name(self.root, "core-runtime")
+            name = artifact_name(self.root, "wayx")
         self.assertEqual((Path(self.directory.name)/"outputs").read_text(), f"artifact_name={name}\n")
         self.assertEqual({p.name for p in self.root.iterdir()}, {"fixture", "manifest.json"})
+        for version in ("../v0.1.0", "v0.1.0/extra", "0.1.0", ""):
+            with self.subTest(version=version), self.assertRaises(ValueError):
+                artifact_name(self.root, "wayx", version=version)
 
     def test_relocation_is_flat_and_verifies_contents(self):
         script = Path(__file__).with_name("relocate-runtime.py")
@@ -136,10 +139,13 @@ class PackageTests(unittest.TestCase):
     def test_release_archives_verify_all_three_platforms(self):
         packages = Path(self.directory.name)/"packages"
         packages.mkdir()
-        for platform_name, label in (("linux", "linux"), ("win32", "windows"), ("darwin", "macos")):
-            root = packages/f"{label}-core-runtime-x64-{self.sha}"
+        for platform_name, label, architecture in (("linux", "linux", "x86_64"),
+                                                  ("win32", "windows", "x86_64"),
+                                                  ("darwin", "macos", "aarch64")):
+            arch = "arm64" if architecture == "aarch64" else "x64"
+            root = packages/f"wayx-{label}-{arch}-{self.sha}"
             shutil.copytree(self.root, root)
-            manifest = dict(self.manifest, platform=platform_name, arch="x86_64")
+            manifest = dict(self.manifest, platform=platform_name, arch=architecture)
             license_file = root/"licenses"/"xlibre-source"/".github"/"arch"/"LICENSE"
             license_file.parent.mkdir(parents=True)
             license_file.write_text("Upstream license in a hidden directory")
@@ -148,11 +154,14 @@ class PackageTests(unittest.TestCase):
             (root/"manifest.json").write_text(json.dumps(manifest))
         output = Path(self.directory.name)/"release-assets"
         command = [sys.executable, str(Path(__file__).with_name("prepare-release.py")),
-                   "--packages", str(packages), "--output", str(output), "--expected-sha", self.sha]
+                   "--packages", str(packages), "--output", str(output), "--expected-sha", self.sha,
+                   "--version", "v0.1.0"]
         subprocess.run(command, check=True, capture_output=True)
-        self.assertEqual(len(list(output.glob("*.zip"))), 3)
+        self.assertEqual({path.name for path in output.iterdir()},
+                         {"wayx-linux-x64-v0.1.0.zip", "wayx-windows-x64-v0.1.0.zip", "wayx-macos-arm64-v0.1.0.zip"})
         for path in output.iterdir():
             with zipfile.ZipFile(path) as bundle:
+                self.assertEqual(json.loads(bundle.read("manifest.json"))["source_sha"], self.sha)
                 self.assertEqual(set(bundle.namelist()),
                                  {"fixture", "manifest.json", "licenses/xlibre-source/.github/arch/LICENSE"})
         shutil.rmtree(output)

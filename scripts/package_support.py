@@ -52,25 +52,28 @@ def verify_files(root, manifest):
             raise RuntimeError(f"Invalid packaged file: {name}")
 
 
-def artifact_name(root, prefix):
+def artifact_name(root, prefix, *, version=None):
     root = Path(root)
     manifest = json.loads((root/"manifest.json").read_text())
     label = {"win32":"windows", "darwin":"macos"}.get(manifest["platform"], manifest["platform"])
     arch = {"x86_64":"x64", "aarch64":"arm64"}.get(manifest["arch"])
     if arch is None: raise RuntimeError("Unsupported package architecture: "+manifest["arch"])
-    stem = f"{label}-{prefix}-{arch}-{manifest['source_sha']}"
+    if version is not None and not re.fullmatch(r"v[0-9][0-9A-Za-z.+-]*", version):
+        raise ValueError("Expected a v-prefixed release version")
+    identifier = version if version is not None else manifest["source_sha"]
+    stem = f"{prefix}-{label}-{arch}-{identifier}"
     if os.environ.get("GITHUB_OUTPUT"):
         with open(os.environ["GITHUB_OUTPUT"], "a") as output:
             output.write(f"artifact_name={stem}\n")
     return stem
 
 
-def archive(root, directory, prefix):
+def archive(root, directory, prefix, *, version=None):
     """Create a single ZIP with runtime contents at its root, for release assets."""
     root, directory = Path(root), Path(directory)
     directory.mkdir(parents=True, exist_ok=True)
     manifest = json.loads((root/"manifest.json").read_text())
-    path = directory/(artifact_name(root, prefix)+".zip")
+    path = directory/(artifact_name(root, prefix, version=version)+".zip")
     with zipfile.ZipFile(path, "w", compression=zipfile.ZIP_DEFLATED) as output:
         for file in sorted(root.rglob("*")):
             if file.is_file():

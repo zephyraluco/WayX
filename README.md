@@ -21,7 +21,7 @@ Wayland/macOS 的窗口定位和瞬态父窗口关系受宿主接口限制。物
 ## 下载运行包
 
 从 [Integration 构建产物](https://github.com/zephyraluco/WayX/actions/workflows/integration.yml)
-下载与宿主平台和架构匹配的 `<平台>-core-runtime-<x64或arm64>-<提交SHA>`。
+下载与宿主平台和架构匹配的 `wayx-<平台>-<x64或arm64>-<提交SHA>`。
 ZIP 解压后顶层即为 `bin`、`share`、`licenses`、`manifest.json` 和启动脚本；
 Linux/macOS 另有 `lib` 目录。
 
@@ -163,7 +163,9 @@ cargo run --locked -- gpu-smoke
 测试职责、夹具和显式运行方式见 [tests/README.md](tests/README.md)。
 
 CI 分为静态检查/单元测试、三平台运行包集成测试和标签发布。
-Release 复用对应提交通过测试的运行包，校验文件后生成单层 ZIP，不重新编译。
+Release 复用对应提交通过测试的运行包，校验文件后生成
+`wayx-<平台>-<x64或arm64>-<版本标签>.zip`（例如 `wayx-windows-x64-v0.1.0.zip`），
+不重新编译。
 
 ## 项目结构
 

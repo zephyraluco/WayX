@@ -185,6 +185,6 @@ manifest = stamp(out, "runtime", core_revision="a8192aa70998a803155bdc2e73b7564a
                  compatibility="Debian 13 / glibc 2.41 or newer" if sys.platform == "linux" else "native runner target",
                  driver_dependencies=["host GPU driver and display server"],
                  signing="ad-hoc" if sys.platform == "darwin" else "unsigned")
-artifact_name(out, "core-runtime")
-if args.archive_dir: archive(out, args.archive_dir, "core-runtime")
+artifact_name(out, "wayx")
+if args.archive_dir: archive(out, args.archive_dir, "wayx")
 print(f"Staged {len(objects)} native binaries in {out}")

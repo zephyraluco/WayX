@@ -64,7 +64,7 @@ jobs:
           const artifacts = await github.paginate(github.rest.actions.listWorkflowRunArtifacts,
             {...context.repo, run_id:integration.id, per_page:100});
           for (const platform of ['linux','windows','macos']) {
-            const pattern = new RegExp(`^${platform}-core-runtime-(x64|arm64)-${sha}$`);
+            const pattern = new RegExp(`^wayx-${platform}-(x64|arm64)-${sha}$`);
             if (artifacts.filter(a => !a.expired && pattern.test(a.name)).length !== 1)
               throw new Error('Require exactly one tested runtime for '+platform);
           }
@@ -74,7 +74,7 @@ jobs:
         ref: ${{ steps.source.outputs.sha }}
     - uses: actions/download-artifact@v8.0.2
       with:
-        pattern: '*-core-runtime-*-${{ steps.source.outputs.sha }}'
+        pattern: 'wayx-*-*-${{ steps.source.outputs.sha }}'
         path: packages
         merge-multiple: false
         run-id: ${{ steps.source.outputs.run-id }}
@@ -82,7 +82,8 @@ jobs:
     - name: Verify runtime contents and prepare release ZIPs
       env:
         SOURCE_SHA: ${{ steps.source.outputs.sha }}
-      run: python scripts/prepare-release.py --packages packages --output release-assets --expected-sha "$SOURCE_SHA"
+        RELEASE_VERSION: ${{ steps.source.outputs.tag }}
+      run: python scripts/prepare-release.py --packages packages --output release-assets --expected-sha "$SOURCE_SHA" --version "$RELEASE_VERSION"
     - name: Publish verified runtime ZIPs
       uses: actions/github-script@v9.0.0
       env:
