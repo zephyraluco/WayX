@@ -2,7 +2,7 @@
 use anyhow::Context;
 use anyhow::Result;
 use clap::{Parser, Subcommand};
-#[cfg(any(feature = "desktop", feature = "ssh"))]
+#[cfg(feature = "desktop")]
 use std::path::PathBuf;
 #[derive(Parser)]
 #[command(version, about = "XLibre + Rust DDX + winit/wgpu display backend")]
@@ -36,37 +36,6 @@ enum Command {
         /// All arguments after -- are passed unchanged to XLibre.
         #[arg(last = true)]
         args: Vec<String>,
-    },
-    /// Establish authenticated SSH X11 forwarding to an already running local XLibre server.
-    #[cfg(feature = "ssh")]
-    Ssh {
-        /// Force one compression algorithm; omitted: zlib@openssh.com, zlib, then none.
-        #[arg(long, value_enum)]
-        compression: Option<wayx::ssh::Compression>,
-        #[arg(long)]
-        host: String,
-        #[arg(long, default_value_t = 22)]
-        port: u16,
-        #[arg(long)]
-        user: String,
-        /// Use an OpenSSH private key instead of password authentication.
-        #[arg(long, conflicts_with = "password")]
-        identity: Option<PathBuf>,
-        /// Prompt for the SSH account password without echo (default without --identity).
-        #[arg(long, conflicts_with = "identity")]
-        password: bool,
-        /// Name of an environment variable holding the encrypted-key passphrase.
-        #[arg(long, requires = "identity")]
-        key_passphrase_env: Option<String>,
-        #[arg(long)]
-        known_hosts: PathBuf,
-        #[arg(long)]
-        xauthority: PathBuf,
-        #[arg(long, default_value_t = 100)]
-        display: u16,
-        /// Remote shell command, e.g. 'xterm'.
-        #[arg(long)]
-        command: String,
     },
     /// Report the C bridge ABI version.
     Abi,
@@ -130,19 +99,8 @@ fn main() -> Result<()> {
         } => {
             let backend =
                 std::sync::Arc::new(std::sync::Mutex::new(wayx::backend::Backend::default()));
-            let selection_config = match (
-                args.iter()
-                    .find_map(|a| a.strip_prefix(':').and_then(|s| s.parse::<u16>().ok())),
-                args.windows(2).find(|a| a[0] == "-auth"),
-            ) {
-                (Some(display), Some(auth)) => Some((display, PathBuf::from(&auth[1]))),
-                _ => {
-                    tracing::warn!(
-                        "Pass :DISPLAY and -auth FILE to enable X11 selection synchronization"
-                    );
-                    None
-                }
-            };
+            let mut args = args;
+            let selection_config = Some(wayx::x11_session::LocalDisplay::from_args(&mut args)?);
             let (ready_send, ready_receive) = std::sync::mpsc::channel();
             let shared = backend.clone();
             let worker = std::thread::spawn(move || -> Result<i32> {
@@ -188,120 +146,15 @@ fn main() -> Result<()> {
                 rootless.then_some(ready_send),
             )?;
         }
-        #[cfg(feature = "ssh")]
-        Command::Ssh {
-            compression,
-            host,
-            port,
-            user,
-            identity,
-            password: _,
-            key_passphrase_env,
-            known_hosts,
-            xauthority,
-            display,
-            command,
-        } => {
-            let code = tokio::runtime::Runtime::new()?.block_on(wayx::ssh::connect(
-                wayx::ssh::Options {
-                    compression,
-                    host,
-                    port,
-                    user,
-                    authentication: match identity {
-                        Some(identity) => wayx::ssh::Authentication::PublicKey {
-                            identity,
-                            passphrase_env: key_passphrase_env,
-                        },
-                        None => wayx::ssh::Authentication::Password { password: None },
-                    },
-                    known_hosts,
-                    xauthority,
-                    display,
-                    command,
-                },
-            ))?;
-            if code != 0 {
-                std::process::exit(i32::try_from(code).unwrap_or(1));
-            }
-        }
     }
     Ok(())
 }
 
-#[cfg(all(test, feature = "ssh"))]
+#[cfg(test)]
 mod cli_tests {
     use super::*;
-
-    fn ssh_args() -> Vec<&'static str> {
-        vec![
-            "wayx",
-            "ssh",
-            "--host",
-            "127.0.0.1",
-            "--user",
-            "test",
-            "--known-hosts",
-            "known_hosts",
-            "--xauthority",
-            "Xauthority",
-            "--command",
-            "xterm",
-        ]
-    }
     #[test]
-    fn password_login_should_not_require_an_identity_file() {
-        let mut args = ssh_args();
-        args.push("--password");
-        let cli = Cli::try_parse_from(args).expect("Password mode must parse without identity");
-        assert!(matches!(
-            cli.command,
-            Command::Ssh {
-                password: true,
-                identity: None,
-                ..
-            }
-        ));
-        assert!(Cli::try_parse_from(ssh_args()).is_ok());
-    }
-    #[test]
-    fn password_and_identity_should_be_mutually_exclusive() {
-        let mut args = ssh_args();
-        args.extend(["--password", "--identity", "id_ed25519"]);
-        assert!(Cli::try_parse_from(args).is_err());
-    }
-    #[test]
-    fn key_passphrase_should_require_a_private_key() {
-        let mut args = ssh_args();
-        args.extend(["--key-passphrase-env", "TEST_PASSPHRASE"]);
-        assert!(Cli::try_parse_from(args).is_err());
-    }
-    #[test]
-    fn compression_selection_is_optional_and_accepts_only_protocol_names() {
-        let cli = Cli::try_parse_from(ssh_args()).unwrap();
-        assert!(matches!(
-            cli.command,
-            Command::Ssh {
-                compression: None,
-                ..
-            }
-        ));
-        for (name, expected) in [
-            ("zlib@openssh.com", wayx::ssh::Compression::ZlibOpenSsh),
-            ("zlib", wayx::ssh::Compression::Zlib),
-            ("none", wayx::ssh::Compression::None),
-        ] {
-            let mut args = ssh_args();
-            args.extend(["--compression", name]);
-            let cli = Cli::try_parse_from(args).unwrap();
-            assert!(
-                matches!(cli.command, Command::Ssh { compression: Some(actual), .. } if actual == expected)
-            );
-        }
-        for invalid in ["auto", "off", "gzip", "zlib,none"] {
-            let mut args = ssh_args();
-            args.extend(["--compression", invalid]);
-            assert!(Cli::try_parse_from(args).is_err());
-        }
+    fn ssh_is_an_external_tool() {
+        assert!(Cli::try_parse_from(["wayx", "ssh"]).is_err());
     }
 }

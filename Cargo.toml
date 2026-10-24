@@ -9,9 +9,8 @@ description = "XLibre display backend using Rust, winit and wgpu"
 crate-type = ["rlib", "staticlib"]
 
 [features]
-default = ["desktop", "ssh"]
+default = ["desktop"]
 desktop = ["dep:winit", "dep:wgpu", "dep:pollster", "dep:arboard", "dep:x11rb", "dep:xim", "dep:cosmic-text", "dep:polling", "dep:windows-sys"]
-ssh = ["dep:russh", "dep:tokio", "dep:rand", "dep:rpassword"]
 
 [dependencies]
 polling = { version = "3", optional = true }
@@ -25,10 +24,6 @@ winit = { version = "0.30", optional = true }
 wgpu = { version = "0.20", optional = true }
 pollster = { version = "0.3", optional = true }
 arboard = { version = "3", default-features = false, features = ["wayland-data-control"], optional = true }
-russh = { version = "0.64", default-features = false, features = ["ring", "rsa", "flate2"], optional = true }
-tokio = { version = "1", features = ["rt-multi-thread", "net", "io-util", "sync", "time"], optional = true }
-rand = { version = "0.8", optional = true }
-rpassword = { version = "7", optional = true }
 xim = { version = "0.5", features = ["x11rb-server"], optional = true }
 cosmic-text = { version = "0.14", default-features = false, features = ["std", "swash"], optional = true }
 
@@ -36,7 +31,6 @@ x11rb = { version = "0.13", features = ["xfixes", "randr"], optional = true }
 
 [dev-dependencies]
 x11rb = { version = "0.13", features = ["xfixes", "xinput", "glx", "randr"] }
-rand_10 = { package = "rand", version = "0.10" }
 tempfile = "3"
 
 [target.'cfg(windows)'.dependencies]

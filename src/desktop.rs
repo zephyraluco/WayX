@@ -444,7 +444,7 @@ struct App {
     frame_limit: Option<u32>,
     presented_frames: u32,
     session: Option<crate::x11_session::X11Session>,
-    session_config: Option<(u16, std::path::PathBuf)>,
+    session_config: Option<crate::x11_session::LocalDisplay>,
     worker: Option<std::thread::JoinHandle<Result<i32>>>,
     layout_ready: Option<std::sync::mpsc::Sender<()>>,
     layout_dirty: Arc<AtomicBool>,
@@ -598,13 +598,10 @@ impl App {
                 .unwrap()
                 .published_windows
                 .contains_key(&1)
-            && let Some((display, auth)) = self.session_config.take()
+            && let Some(config) = self.session_config.take()
         {
-            let mut session = crate::x11_session::X11Session::connect_local(
-                display,
-                &auth,
-                self.backend.clone(),
-            )?;
+            let mut session =
+                crate::x11_session::X11Session::connect_local(&config, self.backend.clone())?;
             session.enable_ime()?;
             if self.rootless {
                 session.enable_window_management()?;
@@ -1378,7 +1375,7 @@ pub fn run(
     demo: bool,
     rootless: bool,
     worker: Option<std::thread::JoinHandle<Result<i32>>>,
-    session_config: Option<(u16, std::path::PathBuf)>,
+    session_config: Option<crate::x11_session::LocalDisplay>,
     frame_limit: Option<u32>,
     layout_ready: Option<std::sync::mpsc::Sender<()>>,
 ) -> Result<()> {

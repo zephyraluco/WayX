@@ -26,7 +26,7 @@ runner, directory, failure = sys.argv[1:]
 sys.path.insert(0, os.path.dirname(runner))
 manifest = dict(abi=5, target="fixture", core="core", client="client", launcher="launcher")
 tests = dict(manifest, runtime_manifest_sha256="fixture", units=[],
-             executables={name:name for name in ("xlibre", "rootless", "window_manager", "desktop_layout")})
+             executables={name:name for name in ("xlibre", "rootless", "window_manager", "desktop_layout", "local_display")})
 def run(command, **kwargs):
     assert kwargs["env"]["PYTHONIOENCODING"] == "utf-8"
     os.write(kwargs["stdout"].fileno(), "2\\u21923\\u21921 outputs; \\u4e2d\\u6587\\n".encode("utf-8"))

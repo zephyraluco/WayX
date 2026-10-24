@@ -85,6 +85,8 @@ for name in tests["units"]:
 if "c-bridge" in tests["executables"]: run("c-bridge", [executable("c-bridge")])
 for name in ("xlibre", "rootless", "window_manager", "desktop_layout"):
     run(name, [executable(name), "--ignored", "--nocapture", "--test-threads=1"])
+run("local-display-no-auth", [executable("local_display"), "--ignored", "--nocapture"])
+run("local-display-auth", [executable("local_display"), "--ignored", "--nocapture"], {"WAYX_TEST_LOCAL_AUTH":"1"})
 run("multi-output", [executable("xlibre"), "--ignored", "--nocapture"], {"WAYX_TEST_MONITORS":"1"})
 if sys.platform != "win32":
     run("xim", [executable("ime"), "--ignored", "--nocapture"], {"WAYX_TEST_XIM_CLIENT":executable("xim-client")})

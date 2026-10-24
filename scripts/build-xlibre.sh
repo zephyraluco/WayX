@@ -16,6 +16,7 @@ if [[ ! -d "$source_dir/.git" ]]; then
   git -C "$source_dir" checkout --detach FETCH_HEAD
 fi
 [[ "$(git -C "$source_dir" rev-parse HEAD)" == "$commit" ]] || { echo 'Unexpected XLibre revision' >&2; exit 1; }
+python3 "$project_root/scripts/restrict-xlibre-listeners.py" "$source_dir"
 # Use a dedicated generated DDX directory; never replace upstream DDX sources.
 mkdir -p "$source_dir/hw/wayx"
 cp "$project_root/ddx/"*.c "$project_root/ddx/"*.h "$project_root/ddx/meson.build" "$project_root/include/wayx.h" "$source_dir/hw/wayx/"

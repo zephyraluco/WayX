@@ -40,3 +40,17 @@ pub fn xauthority_cookie(path: &Path, display: u16) -> Result<[u8; 16]> {
         "No local MIT-MAGIC-COOKIE-1 entry for display :{display}"
     ))
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn rejects_truncated_and_oversized_xauthority() {
+        let file = tempfile::NamedTempFile::new().unwrap();
+        std::fs::write(file.path(), [1, 0, 255]).unwrap();
+        assert!(xauthority_cookie(file.path(), 0).is_err());
+        file.as_file().set_len(1024 * 1024 + 1).unwrap();
+        assert!(xauthority_cookie(file.path(), 0).is_err());
+    }
+}

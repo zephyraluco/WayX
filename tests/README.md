@@ -4,7 +4,7 @@
 
 | 文件 | 验证职责 | 运行入口 |
 | --- | --- | --- |
-| `ssh.rs` | 本地加密 SSH、认证、压缩、cookie 替换与退出状态 | `cargo test --locked --test ssh` |
+| `local_display.rs` | 默认免认证和 Xauthority 模式下的内部 WM/XIM 服务 | 显式运行 ignored 测试，`WAYX_TEST_LOCAL_AUTH=1` 选择认证模式 |
 | `xlibre.rs` | 真实 X11 绘制、输入、剪贴板、滚动、RandR 与 GLX 协商 | 显式运行 ignored 测试 |
 | `rootless.rs` | 遮挡后的独立窗口像素、标题/几何通知与窗口生命周期 | 同上 |
 | `window_manager.rs` | ICCCM/EWMH、窗口约束、焦点与协作关闭 | 同上 |
@@ -33,6 +33,18 @@ export WAYX_TEST_GLX_CLIENT=/path/to/glx-client
 cargo test --locked --test xlibre --test rootless --test window_manager \
   --test desktop_layout --test ime --test glx -- --ignored --nocapture
 ```
+
+外部 OpenSSH 转发在 Linux 运行以下命令验证：
+
+```sh
+python3 scripts/test-openssh.py --binary target/debug/wayx \
+  --core build/xlibre/hw/wayx/libwayx-xserver.so
+```
+
+需要 OpenSSH 客户端/sshd、xauth、
+Xvfb、xdpyinfo、xwininfo 和 X11 C 开发环境。测试使用临时密钥、独立 sshd 和显示编号，
+在默认免认证及 Xauthority 两种模式下检查真实宿主像素和 IPv4/IPv6 回环监听。
+Windows 的 PuTTY 和 macOS 的 OpenSSH 需要对应原生环境验证。
 
 默认 `cargo test` 会跳过需要核心/原生窗口的测试，不能据此声称它们已通过。
 CI 用 `scripts/build-test-kit.py` 编译夹具，再由 `scripts/test-package.py` 在迁移后的

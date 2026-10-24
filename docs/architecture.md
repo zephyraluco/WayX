@@ -2,7 +2,7 @@
 
 ```mermaid
 flowchart TB
-  A[Remote X11 Applications] <--> B[russh · SSH X11 Forwarding]
+  A[Remote X11 Applications] <--> B[OpenSSH / PuTTY · SSH X11 Forwarding]
   B <--> C[XLibre Core · FB / Pixman]
   C <--> D[Custom C DDX · ABI v5]
   D <--> E[Rust Window / Framebuffer / Input State]
@@ -109,17 +109,22 @@ C ABI 提供 UTF-8 缓存读写；真实 X11 Selection 协议由 Rust 内部 X11
 
 ## SSH 与认证
 
-SSH 会话和所有 X11 channel 使用 russh。只允许已记录的原始主机公钥；未知和变更密钥拒绝连接，不自动信任首次连接，也不绕过证书策略。每个会话产生新的随机 spoof cookie；每条 X11 channel 在连接本地 X Server 前验证 X11 setup 的字节序、协议版本、认证名称、长度和 cookie，再替换成本地 Xauthority 中的 cookie。
+WayX 只提供本地 X Server。SSH 会话、主机密钥验证、认证、X11 转发请求以及转发 cookie
+校验与替换由 OpenSSH、PuTTY 等外部工具负责，不提供 `wayx ssh` 子命令。
 
-本地真实 cookie 不经 SSH X11 forwarding 请求传给远端。Unix 系统优先本地 Unix socket，其他情况使用回环 TCP。默认示例不开放 X11 TCP；不使用 `xhost +` 或 `-ac` 作为用户启动方式。`-ac` 仅用于短时隔离的测试显示：Unix 测试禁用 TCP，Windows CI 使用 TCP 覆盖平台监听。用户启动使用 `-auth`。
+未指定 `-auth` 时默认免认证，显式 `-ac` 与之等价；指定 `-auth FILE` 时，内部窗口管理、
+剪贴板和 XIM 连接读取该文件。认证错误直接报错，不回退。两种模式使用同一个内部会话实现。
+Unix 优先使用本地 socket，其他情况连接回环 TCP；WayX 核心的 IPv4/IPv6 TCP 监听均绑定
+回环地址。免认证只限制网络可达范围，不隔离其他本机进程。
 
-测试以本地临时密钥和真实加密 russh 会话执行，不需要外部服务器、用户密钥或虚构的远端认证。CLI 可通过命名的环境变量读取加密身份密钥的密码。未实现 SSH Agent、OpenSSH config、ProxyJump、连接 UI 或重连恢复。
+外部 SSH 的登录和退出不控制 WayX 的生命周期。真实转发测试使用临时主机密钥、客户端密钥
+及隔离 sshd，并验证两种本地认证模式下的显示行为。
 
 ## 平台状态
 
 | 范围 | Linux | Windows | macOS |
 | --- | --- | --- | --- |
-| Rust 状态、认证和加密 SSH 回归 | 原生 CI 通过 | 原生 Rust CI 通过 | 原生 Rust CI 通过 |
+| Rust 状态与本地认证 | 原生 CI 通过 | 原生 Rust CI 通过 | 原生 Rust CI 通过 |
 | C ABI 与核心回调 | C harness 与真实核心通过 | DLL 链接与真实核心回调通过 | 真实核心回调通过 |
 | Rust winit/wgpu 显示后端 | 原生 X11 surface 与 Vulkan 软件渲染已运行 | Win32 窗口与 DX12 软件呈现已运行 | AppKit 窗口与 Metal 呈现已运行 |
 | XLibre 自定义 DDX | 固定提交构建、协议与输入测试通过 | 核心、协议、原生呈现与含空格目录运行包通过 | 核心、协议、原生呈现与搬移运行包通过 |

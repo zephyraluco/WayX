@@ -20,7 +20,7 @@ jobs:
     - name: Install Linux build dependencies
       run: |
         apt-get update
-        apt-get install -y git ca-certificates curl build-essential pkg-config python3 python-is-python3 meson ninja-build patchelf \
+        apt-get install -y git ca-certificates curl build-essential pkg-config python3 python-is-python3 meson ninja-build patchelf openssh-client openssh-server x11-utils \
           libx11-dev libxkbcommon-dev libwayland-dev libpixman-1-dev libxkbfile-dev libxfont-dev libmd-dev xtrans-dev \
           x11proto-dev xkb-data x11-xkb-utils libxcursor1 libx11-xcb1 libxi6 libxkbcommon-x11-0 \
           libgl-dev libglx-dev libogre-1.12-dev fonts-dejavu-core xvfb xauth libvulkan1 mesa-vulkan-drivers libgl1-mesa-dri libglx-mesa0
@@ -44,6 +44,8 @@ jobs:
     - name: Build local integration fixtures
       id: test-kit
       run: python scripts/build-test-kit.py --runtime build/runtime --output build/test-kit --integration-only
+    - name: External OpenSSH forwarding
+      run: python scripts/test-openssh.py --binary target/release/wayx --core "$(cat build/xlibre/wayx-core-path.txt)"
     - name: Check Windows Screen hook syntax
       run: python scripts/test-ddx-window-hooks.py
     - name: Verify and relocate runtime into a path with spaces

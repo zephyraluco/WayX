@@ -43,12 +43,12 @@ def cargo_tests(extra, core_only=False):
         target = message["target"]
         name = "unit-core" if core_only else (target["name"] if "test" in target["kind"] else "unit-"+target["kind"][0]+"-"+target["name"])
         stage(name, message["executable"])
-        if core_only or "test" not in target["kind"] or target["name"] == "ssh": units.append(name)
+        if core_only or "test" not in target["kind"]: units.append(name)
     if process.wait() != 0: raise RuntimeError("Test compilation failed")
 
 
 if args.integration_only:
-    targets = ["xlibre", "rootless", "window_manager", "desktop_layout", "ime", "glx", "native_geometry", "native_gpu", "ssh"]
+    targets = ["xlibre", "rootless", "window_manager", "desktop_layout", "ime", "glx", "native_geometry", "native_gpu", "local_display"]
     cargo_tests([item for target in targets for item in ("--test", target)])
 else:
     cargo_tests(["--all-targets"])

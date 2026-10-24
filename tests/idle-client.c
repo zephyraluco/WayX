@@ -8,7 +8,11 @@ int main(int argc,char **argv) {
     Window window=XCreateSimpleWindow(display,DefaultRootWindow(display),20,20,200,160,0,0,0);
     GC gc=XCreateGC(display,window,0,NULL);
     XStoreName(display,window,"WayX idle regression");
+    XSelectInput(display,window,StructureNotifyMask);
     XMapWindow(display,window);
+    /* An external WM may defer MapWindow; drawing before MapNotify can be lost. */
+    XEvent event;
+    do { XNextEvent(display,&event); } while(event.type!=MapNotify);
     for(unsigned long color=0xff0000; ;color=0x00ff00) {
         XSetForeground(display,gc,color);
         XFillRectangle(display,window,gc,0,0,200,160);
