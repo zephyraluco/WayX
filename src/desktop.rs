@@ -1,4 +1,5 @@
 use crate::renderer::{Image, SharedGpu};
+use crate::scale::{DisplayOptions, ScalePolicy, ScreenMap, physical_size, remote_size};
 use crate::window::{self as window_state, WindowState};
 use crate::{
     backend::{Framebuffer, InputEvent, event},
@@ -24,6 +25,16 @@ use winit::{
     window::{Window, WindowId},
 };
 
+struct NativeView<'a> {
+    owner: Option<&'a Native>,
+    policy: ScalePolicy,
+    screens: Arc<ScreenMap>,
+}
+#[derive(Clone, Copy, PartialEq)]
+struct PositionAnchor {
+    remote: (i32, i32),
+    physical: (i32, i32),
+}
 struct Native {
     id: u32,
     incarnation: u64,
@@ -35,6 +46,13 @@ struct Native {
     gpu: Arc<SharedGpu>,
     config: wgpu::SurfaceConfiguration,
     cursor: (f64, f64),
+    factor: f64,
+    remote_origin: (i32, i32),
+    anchor: Option<PositionAnchor>,
+    issued_position: Option<((i32, i32), (i32, i32))>,
+    inherited_scale: bool,
+    screens: Arc<ScreenMap>,
+    scale_dirty: bool,
     applied_state: Option<WindowState>,
     remote_size: (u32, u32),
     resize_sync: crate::geometry::ResizeSync,
@@ -57,13 +75,37 @@ impl Native {
         id: u32,
         title: &str,
         geometry: &crate::window::GeometrySnapshot,
-        owner: Option<&Window>,
+        view: NativeView<'_>,
         shared: &mut Option<Arc<SharedGpu>>,
         wake: &crate::notify::UiWake,
     ) -> Result<Self> {
+        let owner = view.owner.map(|native| native.window.as_ref());
+        let parent_scale = view.owner.map(|native| native.factor);
+        let anchor = view.owner.and_then(|parent| {
+            parent
+                .window
+                .inner_position()
+                .ok()
+                .map(|position| PositionAnchor {
+                    remote: parent.remote_origin,
+                    physical: (position.x, position.y),
+                })
+        });
         let state = &geometry.state;
         let (width, height) = (geometry.width, geometry.height);
         let acknowledgements = (geometry.resize_ack, geometry.move_ack);
+        let initial_factor = parent_scale.unwrap_or_else(|| {
+            if state.flags & window_state::ROOTLESS != 0 {
+                view.screens.factor_at((state.x, state.y))
+            } else {
+                view.policy.resolve(
+                    event_loop
+                        .primary_monitor()
+                        .map_or(1., |monitor| monitor.scale_factor()),
+                )
+            }
+        });
+        let initial_physical = physical_size((width, height), initial_factor);
         let popup = state.flags & window_state::OVERRIDE_REDIRECT != 0;
         let icon = winit::window::Icon::from_rgba(
             include_bytes!("../assets/icons/wayx-128.rgba").to_vec(),
@@ -73,12 +115,27 @@ impl Native {
         let mut attributes = Window::default_attributes()
             .with_title(title)
             .with_window_icon(Some(icon.clone()))
-            .with_inner_size(winit::dpi::PhysicalSize::new(width, height))
+            .with_inner_size(winit::dpi::PhysicalSize::new(
+                initial_physical.0,
+                initial_physical.1,
+            ))
             .with_decorations(!popup)
             .with_active(!popup);
         if state.flags & window_state::ROOTLESS != 0 {
+            let position = if let Some(anchor) = anchor {
+                (
+                    anchor.physical.0.saturating_add(
+                        ((state.x as f64 - anchor.remote.0 as f64) * initial_factor).round() as i32,
+                    ),
+                    anchor.physical.1.saturating_add(
+                        ((state.y as f64 - anchor.remote.1 as f64) * initial_factor).round() as i32,
+                    ),
+                )
+            } else {
+                view.screens.to_physical((state.x, state.y))
+            };
             attributes =
-                attributes.with_position(winit::dpi::PhysicalPosition::new(state.x, state.y));
+                attributes.with_position(winit::dpi::PhysicalPosition::new(position.0, position.1));
         }
         #[cfg(all(unix, not(target_os = "macos")))]
         {
@@ -103,13 +160,14 @@ impl Native {
         }
         let window = Arc::new(event_loop.create_window(attributes)?);
         let _ = owner;
+        let factor = parent_scale.unwrap_or_else(|| view.policy.resolve(window.scale_factor()));
         let initial_target = state.constrain(width, height);
         let mut resize_sync =
             crate::geometry::ResizeSync::new((width, height), initial_target, acknowledgements.0);
         // Establish the initial size before GPU setup: a real user resize can
         // arrive while the adapter is being initialized.
         let initial_size = window.inner_size();
-        if (initial_size.width, initial_size.height) == initial_target {
+        if (initial_size.width, initial_size.height) == physical_size(initial_target, factor) {
             resize_sync.native_resize(initial_target);
         }
         window.set_ime_allowed(false);
@@ -131,6 +189,11 @@ impl Native {
             "Framebuffer dimensions exceed GPU limits"
         );
         let size = window.inner_size();
+        anyhow::ensure!(
+            size.width <= gpu.device.limits().max_texture_dimension_2d
+                && size.height <= gpu.device.limits().max_texture_dimension_2d,
+            "Scaled window exceeds GPU surface limits"
+        );
         let config = surface
             .get_default_config(&gpu.adapter, size.width.max(1), size.height.max(1))
             .context("Surface incompatible with adapter")?;
@@ -145,6 +208,13 @@ impl Native {
             config,
             image,
             cursor: (0., 0.),
+            factor,
+            remote_origin: (state.x, state.y),
+            anchor,
+            issued_position: None,
+            inherited_scale: parent_scale.is_some(),
+            screens: view.screens,
+            scale_dirty: true,
             applied_state: None,
             remote_size: (width, height),
             resize_sync,
@@ -178,6 +248,7 @@ impl Native {
             self.title = title.to_owned();
         }
         self.remote_size = (width, height);
+        self.remote_origin = (state.x, state.y);
         if self.geometry_generation != Some(generation) {
             self.geometry_generation = Some(generation);
             self.resize_sync
@@ -210,7 +281,7 @@ impl Native {
             current.transient_for = 0;
             old != current
         });
-        if hints_changed {
+        if hints_changed || self.scale_dirty {
             tracing::debug!(window = self.id, "applying native size hints");
             self.window.set_resizable(
                 !(state.min_width != 0
@@ -220,31 +291,48 @@ impl Native {
             );
             self.window
                 .set_min_inner_size(Some(winit::dpi::PhysicalSize::new(
-                    state.min_width.max(1),
-                    state.min_height.max(1),
+                    physical_size(
+                        (state.min_width.max(1), state.min_height.max(1)),
+                        self.factor,
+                    )
+                    .0,
+                    physical_size(
+                        (state.min_width.max(1), state.min_height.max(1)),
+                        self.factor,
+                    )
+                    .1,
                 )));
             let max = if state.max_width == 0 && state.max_height == 0 {
                 None
             } else {
-                Some(winit::dpi::PhysicalSize::new(
-                    if state.max_width == 0 {
-                        crate::backend::MAX_DIMENSION
-                    } else {
-                        state.max_width
-                    },
-                    if state.max_height == 0 {
-                        crate::backend::MAX_DIMENSION
-                    } else {
-                        state.max_height
-                    },
-                ))
+                let (width, height) = physical_size(
+                    (
+                        if state.max_width == 0 {
+                            crate::backend::MAX_DIMENSION
+                        } else {
+                            state.max_width
+                        },
+                        if state.max_height == 0 {
+                            crate::backend::MAX_DIMENSION
+                        } else {
+                            state.max_height
+                        },
+                    ),
+                    self.factor,
+                );
+                Some(winit::dpi::PhysicalSize::new(width, height))
             };
             self.window.set_max_inner_size(max);
+            let increments = physical_size(
+                (state.width_inc.max(1), state.height_inc.max(1)),
+                self.factor,
+            );
             self.window
                 .set_resize_increments(Some(winit::dpi::PhysicalSize::new(
-                    state.width_inc.max(1),
-                    state.height_inc.max(1),
+                    increments.0,
+                    increments.1,
                 )));
+            self.scale_dirty = false;
         }
         if changed(|s| s.flags & (window_state::ABOVE | window_state::OVERRIDE_REDIRECT)) {
             self.window.set_window_level(
@@ -289,14 +377,19 @@ impl Native {
         else {
             return;
         };
-        if (client.x, client.y) == target {
+        let physical_target = self.physical_position(target);
+        if (client.x, client.y) == physical_target {
             self.position_sync.native_move(target);
             return;
         }
-        let outer =
-            crate::geometry::outer_for_client(target, (client.x, client.y), (outer.x, outer.y));
+        let outer = crate::geometry::outer_for_client(
+            physical_target,
+            (client.x, client.y),
+            (outer.x, outer.y),
+        );
         // Consume before calling the OS: a target may issue one operation only.
         self.position_sync.take_target();
+        self.issued_position = Some((physical_target, target));
         tracing::debug!(
             window = self.id,
             ?target,
@@ -312,15 +405,69 @@ impl Native {
             return;
         }
         if let Some((width, height)) = self.resize_sync.target() {
-            let size = winit::dpi::PhysicalSize::new(width, height);
+            let physical = physical_size((width, height), self.factor);
+            let size = winit::dpi::PhysicalSize::new(physical.0, physical.1);
             if self.window.inner_size() == size {
                 self.resize_sync.native_resize((width, height));
             } else if self.resize_sync.issue_target().is_some()
                 && let Some(actual) = self.window.request_inner_size(size)
             {
-                let constrained = state.constrain(actual.width, actual.height);
+                let remote = self.remote_dimensions((actual.width, actual.height));
+                let constrained = state.constrain(remote.0, remote.1);
                 self.resize_sync.native_resize(constrained);
             }
+        }
+    }
+    fn physical_position(&self, point: (i32, i32)) -> (i32, i32) {
+        self.anchor.map_or_else(
+            || self.screens.to_physical(point),
+            |anchor| {
+                (
+                    (anchor.physical.0 as f64
+                        + (point.0 as f64 - anchor.remote.0 as f64) * self.factor)
+                        .round() as i32,
+                    (anchor.physical.1 as f64
+                        + (point.1 as f64 - anchor.remote.1 as f64) * self.factor)
+                        .round() as i32,
+                )
+            },
+        )
+    }
+    fn remote_position(&self, point: (i32, i32)) -> (i32, i32) {
+        self.anchor.map_or_else(
+            || self.screens.to_remote(point),
+            |anchor| {
+                (
+                    (anchor.remote.0 as f64
+                        + (point.0 as f64 - anchor.physical.0 as f64) / self.factor)
+                        .round() as i32,
+                    (anchor.remote.1 as f64
+                        + (point.1 as f64 - anchor.physical.1 as f64) / self.factor)
+                        .round() as i32,
+                )
+            },
+        )
+    }
+    fn remote_dimensions(&self, physical: (u32, u32)) -> (u32, u32) {
+        if physical.0 == 0 || physical.1 == 0 {
+            return physical;
+        }
+        if let Some(target) = self.resize_sync.target()
+            && physical_size(target, self.factor) == physical
+        {
+            return target;
+        }
+        if physical_size(self.remote_size, self.factor) == physical {
+            return self.remote_size;
+        }
+        remote_size(physical, self.factor)
+    }
+    fn set_scale(&mut self, factor: f64) {
+        if (self.factor - factor).abs() > f64::EPSILON {
+            self.factor = factor;
+            self.scale_dirty = true;
+            self.resize_sync.refresh_native_target();
+            self.window.request_redraw();
         }
     }
     fn x11_id(&self) -> Result<Option<u32>> {
@@ -363,13 +510,19 @@ impl Native {
         self.transient_owner = owner;
         Ok(())
     }
-    fn resize_surface(&mut self, width: u32, height: u32) {
+    fn resize_surface(&mut self, width: u32, height: u32) -> Result<()> {
         if width == 0 || height == 0 {
-            return;
+            return Ok(());
         }
+        anyhow::ensure!(
+            width <= self.gpu.device.limits().max_texture_dimension_2d
+                && height <= self.gpu.device.limits().max_texture_dimension_2d,
+            "Scaled window exceeds GPU surface limits"
+        );
         self.config.width = width;
         self.config.height = height;
         self.surface.configure(&self.gpu.device, &self.config);
+        Ok(())
     }
     fn upload(&mut self, fb: &Framebuffer) -> Result<()> {
         if fb.width != self.image.width || fb.height != self.image.height {
@@ -437,6 +590,8 @@ struct App {
     ui_wake: crate::notify::UiWake,
     session_watch: Option<crate::readiness::ReadinessWatch>,
     native: HashMap<u32, Native>,
+    scale: ScalePolicy,
+    screens: Arc<ScreenMap>,
     native_ids: HashMap<WindowId, u32>,
     gpu: Option<Arc<SharedGpu>>,
     gpu_retired: Arc<AtomicU64>,
@@ -484,15 +639,22 @@ impl App {
             .map(|m| {
                 let position = m.position();
                 let size = m.size();
-                crate::layout::MonitorRect {
-                    x: position.x,
-                    y: position.y,
-                    width: size.width,
-                    height: size.height,
-                }
+                (
+                    crate::layout::MonitorRect {
+                        x: position.x,
+                        y: position.y,
+                        width: size.width,
+                        height: size.height,
+                    },
+                    m.scale_factor(),
+                )
             })
             .collect();
-        let layout = crate::layout::DesktopLayout::new(monitors).context(
+        let screens = ScreenMap::new(monitors, self.scale)?;
+        if *self.screens != *screens {
+            self.screens = screens;
+        }
+        let layout = self.screens.layout().context(
             "Host desktop exceeds the supported dimensions or 256 MiB framebuffer limit",
         )?;
         let mut backend = self
@@ -692,16 +854,17 @@ impl App {
                 continue;
             }
             if !self.native.contains_key(&id) {
-                let owner = self
-                    .native
-                    .get(&geometry.state.transient_for)
-                    .map(|native| native.window.as_ref());
+                let owner = self.native.get(&geometry.state.transient_for);
                 let mut native = pollster::block_on(Native::new(
                     event_loop,
                     id,
                     &window.title,
                     geometry,
-                    owner,
+                    NativeView {
+                        owner,
+                        policy: self.scale,
+                        screens: self.screens.clone(),
+                    },
                     &mut self.gpu,
                     &self.ui_wake,
                 ))?;
@@ -712,7 +875,28 @@ impl App {
                     gpu.report(self.native.len(), "created");
                 }
             }
+            let parent = self.native.get(&geometry.state.transient_for);
+            let parent_scale = parent.map(|parent| parent.factor);
+            let anchor = parent.and_then(|parent| {
+                parent
+                    .window
+                    .inner_position()
+                    .ok()
+                    .map(|position| PositionAnchor {
+                        remote: parent.remote_origin,
+                        physical: (position.x, position.y),
+                    })
+            });
             if let Some(native) = self.native.get_mut(&id) {
+                if *native.screens != *self.screens || native.anchor != anchor {
+                    native.screens = self.screens.clone();
+                    native.anchor = anchor;
+                    native.position_sync.refresh_native_target();
+                }
+                let factor = parent_scale
+                    .unwrap_or_else(|| self.scale.resolve(native.window.scale_factor()));
+                native.inherited_scale = parent_scale.is_some();
+                native.set_scale(factor);
                 native.apply_state(geometry, window.generation, &window.title)?;
                 if let Some((sequence, (width, height))) = native.resize_sync.take_input() {
                     let mut input = resize_input(
@@ -1020,7 +1204,11 @@ impl ApplicationHandler<()> for App {
                 if size.width != 0 && size.height != 0 && actual != size {
                     return;
                 }
-                native.resize_surface(actual.width, actual.height);
+                if let Err(error) = native.resize_surface(actual.width, actual.height) {
+                    self.error = Some(error);
+                    event_loop.exit();
+                    return;
+                }
                 native.window.request_redraw();
                 if self.demo {
                     return;
@@ -1030,7 +1218,8 @@ impl ApplicationHandler<()> for App {
                         * window_state::MINIMIZED)
                     | (u32::from(native.window.fullscreen().is_some()) * window_state::FULLSCREEN);
                 let state = native.applied_state.unwrap_or_default();
-                input = resize_input(id, &state, size.width, size.height, flags);
+                let remote = native.remote_dimensions((size.width, size.height));
+                input = resize_input(id, &state, remote.0, remote.1, flags);
                 if input.kind == event::RESIZE {
                     native
                         .resize_sync
@@ -1071,7 +1260,17 @@ impl ApplicationHandler<()> for App {
                 if outer != position || native.window.is_minimized().unwrap_or(false) {
                     return;
                 }
-                let position = (client.x.clamp(-32768, 32767), client.y.clamp(-32768, 32767));
+                let physical = (client.x, client.y);
+                let remote = if let Some((expected, remote)) = native.issued_position
+                    && expected == physical
+                {
+                    native.issued_position = None;
+                    remote
+                } else {
+                    native.issued_position = None;
+                    native.remote_position(physical)
+                };
+                let position = (remote.0.clamp(-32768, 32767), remote.1.clamp(-32768, 32767));
                 let Some(sequence) = native.position_sync.native_move(position) else {
                     return;
                 };
@@ -1081,7 +1280,23 @@ impl ApplicationHandler<()> for App {
                 input.x = position.0 as f64;
                 input.y = position.1 as f64;
             }
-            WindowEvent::ScaleFactorChanged { .. } => {
+            WindowEvent::ScaleFactorChanged {
+                scale_factor,
+                mut inner_size_writer,
+            } => {
+                if !native.inherited_scale {
+                    native.set_scale(self.scale.resolve(scale_factor));
+                }
+                native.resize_sync.refresh_native_target();
+                let target = physical_size(
+                    native.resize_sync.target().unwrap_or(native.remote_size),
+                    native.factor,
+                );
+                if let Err(error) = inner_size_writer
+                    .request_inner_size(winit::dpi::PhysicalSize::new(target.0, target.1))
+                {
+                    tracing::debug!(%error,"DPI size request expired; geometry sync will retry");
+                }
                 self.layout_dirty.store(true, Ordering::Release);
                 return;
             }
@@ -1174,7 +1389,9 @@ impl ApplicationHandler<()> for App {
                 input.kind = event::SCROLL;
                 let (x, y) = match delta {
                     MouseScrollDelta::LineDelta(x, y) => (x as f64, y as f64),
-                    MouseScrollDelta::PixelDelta(p) => (p.x / 40., p.y / 40.),
+                    MouseScrollDelta::PixelDelta(p) => {
+                        (p.x / native.factor / 40., p.y / native.factor / 40.)
+                    }
                 };
                 input.x = x;
                 input.y = y;
@@ -1421,7 +1638,7 @@ pub fn run(
     rootless: bool,
     worker: Option<std::thread::JoinHandle<Result<i32>>>,
     session_config: Option<crate::x11_session::LocalDisplay>,
-    frame_limit: Option<u32>,
+    options: DisplayOptions,
     layout_ready: Option<std::sync::mpsc::Sender<()>>,
 ) -> Result<()> {
     let layout_dirty = Arc::new(AtomicBool::new(false));
@@ -1462,6 +1679,8 @@ pub fn run(
         pending_move: None,
         backend,
         native: HashMap::new(),
+        scale: options.scale,
+        screens: Arc::new(ScreenMap::default()),
         native_ids: HashMap::new(),
         gpu: None,
         gpu_retired: Arc::new(AtomicU64::new(0)),
@@ -1479,7 +1698,7 @@ pub fn run(
         presentation: rootless.then(crate::app_lifecycle::Presentation::default),
         #[cfg(target_os = "macos")]
         macos_initialized: false,
-        frame_limit,
+        frame_limit: options.frame_limit,
         presented_frames: 0,
         session: None,
         session_config,

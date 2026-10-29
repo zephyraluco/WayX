@@ -10,6 +10,8 @@ pub mod desktop;
 pub mod layout;
 #[cfg(all(feature = "desktop", target_os = "windows"))]
 mod layout_windows;
+#[cfg(feature = "desktop")]
+pub mod scale;
 
 #[cfg(feature = "desktop")]
 pub mod selection;

@@ -60,6 +60,11 @@ impl ResizeSync {
         self.pending = Some((self.sequence, size));
         self.outgoing = Some((self.sequence, size));
     }
+    /// A DPI change reissues a native target without sending an X11 resize.
+    pub fn refresh_native_target(&mut self) {
+        self.native_target = Some(self.pending.map_or(self.server, |(_, size)| size));
+        self.issued = None;
+    }
     pub fn target(&self) -> Option<Size> {
         self.native_target
     }
@@ -97,6 +102,22 @@ mod tests {
         let (sequence, _) = sync.take_input().unwrap();
         sync.server_update((800, 600), sequence);
         assert_eq!(sync.issue_target(), Some((800, 600)));
+    }
+    #[test]
+    fn dpi_change_reissues_native_size_without_an_x11_resize() {
+        let mut sync = ready();
+        sync.refresh_native_target();
+        assert_eq!(sync.issue_target(), Some((400, 287)));
+        sync.native_resize((400, 287));
+        assert_eq!(sync.take_input(), None);
+        sync.native_resize((800, 600));
+        let (sequence, _) = sync.take_input().unwrap();
+        sync.refresh_native_target();
+        assert_eq!(sync.issue_target(), Some((800, 600)));
+        sync.native_resize((800, 600));
+        assert_eq!(sync.take_input(), None);
+        sync.server_update((800, 600), sequence);
+        assert_eq!(sync.take_input(), None);
     }
     #[test]
     fn startup_transients_do_not_resize_x11() {
@@ -211,6 +232,9 @@ impl PositionSync {
             self.server = position;
             self.target = Some(position);
         }
+    }
+    pub fn refresh_native_target(&mut self) {
+        self.target = Some(self.pending.map_or(self.server, |(_, position)| position));
     }
     pub fn target(&self) -> Option<(i32, i32)> {
         self.target

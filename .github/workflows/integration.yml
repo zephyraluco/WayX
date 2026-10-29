@@ -23,7 +23,7 @@ jobs:
         apt-get install -y git ca-certificates curl build-essential pkg-config python3 python-is-python3 meson ninja-build patchelf openssh-client openssh-server x11-utils \
           libx11-dev libxkbcommon-dev libwayland-dev libpixman-1-dev libxkbfile-dev libxfont-dev libmd-dev xtrans-dev \
           x11proto-dev xkb-data x11-xkb-utils libxcursor1 libx11-xcb1 libxi6 libxkbcommon-x11-0 \
-          libgl-dev libglx-dev libogre-1.12-dev fonts-dejavu-core xvfb xauth libvulkan1 mesa-vulkan-drivers libgl1-mesa-dri libglx-mesa0
+          libgl-dev libglx-dev libogre-1.12-dev fonts-dejavu-core xvfb xauth libvulkan1 mesa-vulkan-drivers libgl1-mesa-dri libglx-mesa0 libxtst6
     - uses: actions/checkout@v7.0.1
     - uses: dtolnay/rust-toolchain@stable
     - uses: Swatinem/rust-cache@v2.9.3
