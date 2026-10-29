@@ -76,8 +76,9 @@ def pkg(*packages, option="--cflags", libs=True):
 
 if sys.platform in ("linux", "darwin"):
     compile_c("xim-client", "tests/xim-client.c", pkg("x11"))
+    compile_c("idle-client", "tests/idle-client.c", pkg("x11"))
 if sys.platform == "linux":
-    for name in ("native-resize", "native-rootless", "native-glx", "idle-client"):
+    for name in ("native-resize", "native-rootless", "native-glx"):
         compile_c(name, "tests/"+name+".c", pkg("x11"))
     compile_c("glx-client", "tests/glx-client.c", pkg("gl", "x11"))
     includedir = subprocess.check_output(["pkg-config", "--variable=includedir", "OGRE"], text=True).strip()
@@ -109,7 +110,7 @@ shutil.copytree(args.runtime/"licenses", out/"licenses")
 shutil.copytree("scripts", out/"scripts", ignore=shutil.ignore_patterns("__pycache__"))
 # Test jobs need no checkout or build source, and cannot fall back to compilation.
 # Only test drivers, the fixture resolver and manifest verifier are shipped.
-keep = {"test-package.py", "test-package-support.py", "test-native.py", "test-idle-cpu.py", "test_fixtures.py", "create-xauthority.py", "package_support.py", "relocate-runtime.py", "prepare-release.py"}
+keep = {"test-package.py", "test-package-support.py", "test-native.py", "test-idle-cpu.py", "test-macos-lifecycle.py", "test_fixtures.py", "create-xauthority.py", "package_support.py", "relocate-runtime.py", "prepare-release.py"}
 for path in (out/"scripts").iterdir():
     if path.name not in keep:
         if path.is_dir(): shutil.rmtree(path)

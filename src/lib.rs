@@ -1,4 +1,8 @@
 //! Shared display state and the versioned, thread-safe C DDX boundary.
+#[cfg(all(feature = "desktop", any(target_os = "macos", test)))]
+mod app_lifecycle;
+#[cfg(all(feature = "desktop", target_os = "macos"))]
+mod app_macos;
 pub mod backend;
 pub mod bridge;
 #[cfg(feature = "desktop")]

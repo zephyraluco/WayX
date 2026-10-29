@@ -450,6 +450,10 @@ struct App {
     error: Option<anyhow::Error>,
     demo: bool,
     rootless: bool,
+    #[cfg(target_os = "macos")]
+    presentation: Option<crate::app_lifecycle::Presentation>,
+    #[cfg(target_os = "macos")]
+    macos_initialized: bool,
     frame_limit: Option<u32>,
     presented_frames: u32,
     session: Option<crate::x11_session::X11Session>,
@@ -640,6 +644,19 @@ impl App {
                 .is_some_and(|w| w.mapped && w.incarnation == native.incarnation)
         });
         self.native_ids.retain(|_, id| self.native.contains_key(id));
+        #[cfg(target_os = "macos")]
+        if let Some(presentation) = &mut self.presentation {
+            let has_windows = windows.iter().any(|(&id, window)| {
+                crate::app_lifecycle::is_application_window(
+                    id,
+                    window.mapped,
+                    window.geometry.state.flags,
+                )
+            });
+            if let Some(visible) = presentation.update(has_windows, Instant::now()) {
+                crate::app_macos::set_visible(visible)?;
+            }
+        }
         if self.native.len() != previous_windows
             && let Some(gpu) = &self.gpu
         {
@@ -854,6 +871,16 @@ impl ApplicationHandler<()> for App {
         self.wake_pending.store(false, Ordering::Release);
     }
     fn resumed(&mut self, event_loop: &ActiveEventLoop) {
+        #[cfg(target_os = "macos")]
+        if !self.macos_initialized {
+            if let Err(error) = crate::app_macos::initialize(self.rootless) {
+                self.layout_ready.take();
+                self.error = Some(error);
+                event_loop.exit();
+                return;
+            }
+            self.macos_initialized = true;
+        }
         if let Err(error) = self.update_host_layout(event_loop) {
             self.layout_ready.take();
             self.error = Some(error);
@@ -949,6 +976,15 @@ impl ApplicationHandler<()> for App {
                     .and_then(|session| session.next_deadline()),
             )
             .chain(self.next_gpu_poll)
+            .min();
+        #[cfg(target_os = "macos")]
+        let deadline = deadline
+            .into_iter()
+            .chain(
+                self.presentation
+                    .as_ref()
+                    .and_then(|presentation| presentation.deadline()),
+            )
             .min();
         #[cfg(not(target_os = "windows"))]
         let deadline = if self.layout_fallback() {
@@ -1389,7 +1425,15 @@ pub fn run(
     layout_ready: Option<std::sync::mpsc::Sender<()>>,
 ) -> Result<()> {
     let layout_dirty = Arc::new(AtomicBool::new(false));
-    let event_loop = EventLoop::<()>::with_user_event().build()?;
+    let mut builder = EventLoop::<()>::with_user_event();
+    #[cfg(target_os = "macos")]
+    if rootless {
+        use winit::platform::macos::{ActivationPolicy, EventLoopBuilderExtMacOS};
+        builder
+            .with_activation_policy(ActivationPolicy::Accessory)
+            .with_activate_ignoring_other_apps(false);
+    }
+    let event_loop = builder.build()?;
     let proxy = event_loop.create_proxy();
     let wake_pending = Arc::new(AtomicBool::new(false));
     let pending = wake_pending.clone();
@@ -1431,6 +1475,10 @@ pub fn run(
         error: None,
         demo,
         rootless,
+        #[cfg(target_os = "macos")]
+        presentation: rootless.then(crate::app_lifecycle::Presentation::default),
+        #[cfg(target_os = "macos")]
+        macos_initialized: false,
         frame_limit,
         presented_frames: 0,
         session: None,

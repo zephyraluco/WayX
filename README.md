@@ -54,6 +54,11 @@ Windows PowerShell：
 Rootless 模式在应用打开窗口后才显示原生窗口。要使用单窗口桌面，去掉 `--rootless`，
 并在 `-- :100` 后添加 `-screen 0 1280x800x24 -crtcs 1@1280x800`。
 
+macOS rootless 启动时不显示 Dock 图标；普通应用窗口出现时显示，最后一个窗口关闭或
+取消映射约 200 毫秒后隐藏。最小化窗口仍保留 Dock 图标，菜单等弹出窗口不单独触发显示。
+隐藏后 X11 服务继续等待连接，可重新打开应用。此行为不脱离启动终端；退出服务使用
+`Ctrl+C`，或在应用可见时通过 Dock 退出 / `Cmd+Q`。
+
 ### 连接远端应用
 
 远端 sshd 需启用 `X11Forwarding yes` 并安装 `xauth`。WayX 不生成或校验 SSH

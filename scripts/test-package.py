@@ -98,6 +98,9 @@ if sys.platform == "linux":
             if rootless: gl_env["WAYX_TEST_ROOTLESS"]="1"
             run(f"{name}-rootless-{rootless}", [executable("glx"), "--ignored", "--nocapture"], gl_env)
 client, core = runtime/manifest["client"], runtime/manifest["core"]
+if sys.platform == "darwin":
+    run("rootless-lifecycle", [sys.executable, "scripts/test-macos-lifecycle.py", "--binary", client,
+                              "--core", core, "--client", executable("idle-client")])
 if sys.platform == "linux":
     run("gpu-readback", [client, "gpu-smoke"])
     run("native", [sys.executable, "scripts/test-native.py", "--binary", client, "--core", core,

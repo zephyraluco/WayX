@@ -10,7 +10,7 @@ crate-type = ["rlib", "staticlib"]
 
 [features]
 default = ["desktop"]
-desktop = ["dep:winit", "dep:wgpu", "dep:pollster", "dep:arboard", "dep:x11rb", "dep:xim", "dep:cosmic-text", "dep:polling", "dep:windows-sys"]
+desktop = ["dep:winit", "dep:wgpu", "dep:pollster", "dep:arboard", "dep:x11rb", "dep:xim", "dep:cosmic-text", "dep:polling", "dep:windows-sys", "dep:objc2", "dep:objc2-app-kit", "dep:objc2-foundation"]
 
 [dependencies]
 polling = { version = "3", optional = true }
@@ -35,3 +35,8 @@ tempfile = "3"
 
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.61.2", optional = true, features = ["Win32_Foundation", "Win32_Graphics_Gdi", "Win32_System_LibraryLoader", "Win32_UI_WindowsAndMessaging"] }
+
+[target.'cfg(target_os = "macos")'.dependencies]
+objc2 = { version = "0.5", optional = true }
+objc2-app-kit = { version = "0.2.2", optional = true, default-features = false, features = ["NSApplication", "NSImage", "NSRunningApplication"] }
+objc2-foundation = { version = "0.2.2", optional = true, default-features = false, features = ["NSData"] }

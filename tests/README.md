@@ -46,6 +46,10 @@ Xvfb、xdpyinfo、xwininfo 和 X11 C 开发环境。测试使用临时密钥、�
 在默认免认证及 Xauthority 两种模式下检查真实宿主像素和 IPv4/IPv6 回环监听。
 Windows 的 PuTTY 和 macOS 的 OpenSSH 需要对应原生环境验证。
 
+macOS 运行包测试会执行 `scripts/test-macos-lifecycle.py`：检查真实 AppKit 激活策略，
+依次打开两个窗口、关闭最后一个窗口、再次打开并关闭窗口，确认隐藏后仍可连接 X11。
+显隐延迟、弹出窗口、最小化窗口和快速重建逻辑由 `app_lifecycle` 单元测试覆盖。
+
 默认 `cargo test` 会跳过需要核心/原生窗口的测试，不能据此声称它们已通过。
 CI 用 `scripts/build-test-kit.py` 编译夹具，再由 `scripts/test-package.py` 在迁移后的
 运行包上执行；打包测试必须使用预编译夹具，不允许回退到源码构建。
