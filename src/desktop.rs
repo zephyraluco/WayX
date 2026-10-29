@@ -65,8 +65,14 @@ impl Native {
         let (width, height) = (geometry.width, geometry.height);
         let acknowledgements = (geometry.resize_ack, geometry.move_ack);
         let popup = state.flags & window_state::OVERRIDE_REDIRECT != 0;
+        let icon = winit::window::Icon::from_rgba(
+            include_bytes!("../assets/icons/wayx-128.rgba").to_vec(),
+            128,
+            128,
+        )?;
         let mut attributes = Window::default_attributes()
             .with_title(title)
+            .with_window_icon(Some(icon.clone()))
             .with_inner_size(winit::dpi::PhysicalSize::new(width, height))
             .with_decorations(!popup)
             .with_active(!popup);
@@ -86,9 +92,12 @@ impl Native {
             }
         }
         #[cfg(target_os = "windows")]
-        if let Some(owner) = owner {
+        {
             use winit::platform::windows::WindowAttributesExtWindows;
-            if let RawWindowHandle::Win32(handle) = owner.window_handle()?.as_raw() {
+            attributes = attributes.with_taskbar_icon(Some(icon));
+            if let Some(owner) = owner
+                && let RawWindowHandle::Win32(handle) = owner.window_handle()?.as_raw()
+            {
                 attributes = attributes.with_owner_window(handle.hwnd.get());
             }
         }
