@@ -15,6 +15,7 @@
 | `native-resize.c` / `native-rootless.c` / `native-glx.c` | 从 Linux 宿主 X11 观察最终呈现、原生窗口关系、独立关闭与像素 | `scripts/test-native.py` |
 | `idle-client.c` | 保持静止窗口并按命令制造 Damage，检查空闲后能恢复呈现 | `scripts/test-native.py` |
 | `bridge.c` | 用 C 编译器验证 ABI 布局、回调、缓冲区边界与剪贴板 | `scripts/test-c-bridge.sh` |
+| `scale-client.c` | 实际宿主像素、指针映射、尺寸约束与双向缩放 | `scripts/test-scale.py`，覆盖 rootful/rootless 与固定/自动倍率 |
 
 `support/core.rs` 集中管理嵌入式 XLibre 的动态库、C 参数、API/Handle 生命周期、
 5 秒关闭超时和异常退出清理。各测试仍显式选择显示编号、传输方式、屏幕参数与回调。
@@ -45,6 +46,10 @@ python3 scripts/test-openssh.py --binary target/debug/wayx \
 Xvfb、xdpyinfo、xwininfo 和 X11 C 开发环境。测试使用临时密钥、独立 sshd 和显示编号，
 在默认免认证及 Xauthority 两种模式下检查真实宿主像素和 IPv4/IPv6 回环监听。
 Windows 的 PuTTY 和 macOS 的 OpenSSH 需要对应原生环境验证。
+
+缩放测试在 Linux 用 Xvfb 执行 0.5×、1×、1.25×、1.5×、2×、4× 及模拟 2× DPI 的 auto；
+运行包测试使用预编译 `scale-client`。原有原生几何基线显式使用 `--scale 1`。
+真实混合 DPI 跨屏、Wayland、Windows 和 Retina 交互仍需对应宿主的原生验证。
 
 macOS 运行包测试会执行 `scripts/test-macos-lifecycle.py`：检查真实 AppKit 激活策略，
 依次打开两个窗口、关闭最后一个窗口、再次打开并关闭窗口，确认隐藏后仍可连接 X11。

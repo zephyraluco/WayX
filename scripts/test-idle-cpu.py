@@ -360,7 +360,7 @@ with tempfile.TemporaryDirectory(prefix="wayx-idle-cpu-") as directory:
     env = os.environ.copy()
     env.update(RUST_LOG="wayx=debug", NO_COLOR="1")
     with log.open("w") as output:
-        process = subprocess.Popen([str(args.binary.resolve()), "serve", "--rootless", "--core",
+        process = subprocess.Popen([str(args.binary.resolve()), "serve", "--scale", "1", "--rootless", "--core",
                                     str(args.core.resolve()), "--", f":{args.display}", "-listen", "tcp",
                                     "-nolisten", "local", "-auth", str(auth)],
                                    env=env, stdout=output, stderr=output)

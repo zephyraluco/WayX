@@ -33,6 +33,9 @@ enum Command {
         /// Exit after N presented frames, then shut down XLibre.
         #[arg(long, value_parser=clap::value_parser!(u32).range(1..))]
         frames: Option<u32>,
+        /// Host display scale: auto or a multiplier between 0.5 and 4 (1 = native pixels).
+        #[arg(long, default_value = "auto")]
+        scale: wayx::scale::ScalePolicy,
         /// All arguments after -- are passed unchanged to XLibre.
         #[arg(last = true)]
         args: Vec<String>,
@@ -84,7 +87,10 @@ fn main() -> Result<()> {
                 false,
                 None,
                 None,
-                frames,
+                wayx::scale::DisplayOptions {
+                    frame_limit: frames,
+                    ..Default::default()
+                },
                 None,
             )?;
         }
@@ -96,6 +102,7 @@ fn main() -> Result<()> {
             args,
             frames,
             rootless,
+            scale,
         } => {
             let backend =
                 std::sync::Arc::new(std::sync::Mutex::new(wayx::backend::Backend::default()));
@@ -142,7 +149,10 @@ fn main() -> Result<()> {
                 rootless,
                 Some(worker),
                 selection_config,
-                frames,
+                wayx::scale::DisplayOptions {
+                    frame_limit: frames,
+                    scale,
+                },
                 rootless.then_some(ready_send),
             )?;
         }
@@ -156,5 +166,27 @@ mod cli_tests {
     #[test]
     fn ssh_is_an_external_tool() {
         assert!(Cli::try_parse_from(["wayx", "ssh"]).is_err());
+    }
+    #[cfg(feature = "desktop")]
+    #[test]
+    fn scale_defaults_to_auto_and_accepts_only_supported_values() {
+        let cli = Cli::try_parse_from(["wayx", "serve", "--core", "core"]).unwrap();
+        assert!(matches!(
+            cli.command,
+            Command::Serve {
+                scale: wayx::scale::ScalePolicy::Auto,
+                ..
+            }
+        ));
+        for value in ["auto", "0.5", "1", "1.25", "2", "4"] {
+            assert!(
+                Cli::try_parse_from(["wayx", "serve", "--core", "core", "--scale", value]).is_ok()
+            );
+        }
+        for value in ["0", "NaN", "inf", "4.01", "fit"] {
+            assert!(
+                Cli::try_parse_from(["wayx", "serve", "--core", "core", "--scale", value]).is_err()
+            );
+        }
     }
 }

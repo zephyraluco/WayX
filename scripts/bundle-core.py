@@ -136,10 +136,6 @@ while queue:
             register(dependency, bindir / name)
 
 shutil.copytree(args.xkb_dir, out / "share" / "X11" / "xkb", symlinks=False)
-icon_dir = out / "share" / "icons"
-icon_dir.mkdir(parents=True)
-for name in ("wayx.svg", "wayx-256.png", "wayx.ico", "wayx.icns"):
-    shutil.copy2(Path("assets/icons") / name, icon_dir / name)
 if sys.platform == "linux":
     for _, path in objects.values():
         relative = "$ORIGIN/../lib" if path.parent == bindir else "$ORIGIN"

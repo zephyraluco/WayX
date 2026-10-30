@@ -65,7 +65,7 @@ with tempfile.TemporaryDirectory(prefix="wayx-native-") as temp:
                 auth = Path(temp) / "Xauthority"
                 subprocess.run(["python3", "scripts/create-xauthority.py", "--display",
                                 str(core_display), "--output", str(auth)], check=True)
-                subprocess.run([binary, "serve", "--core", str(args.core.resolve()), "--frames", "3",
+                subprocess.run([binary, "serve", "--scale", "1", "--core", str(args.core.resolve()), "--frames", "3",
                                 "--", f":{core_display}", "-screen", "0", "1280x800x24",
                                 "-crtcs", "1@1280x800", "-nolisten", "tcp", "-auth", str(auth)],
                                env=env, check=True, timeout=30)
@@ -80,7 +80,7 @@ with tempfile.TemporaryDirectory(prefix="wayx-native-") as temp:
                                     "tests/"+name+".c", *flags, "-o", str(destination)], check=True)
                     return destination
                 resize_client = fixture("native-resize")
-                desktop = subprocess.Popen([binary, "serve", "--core", str(args.core.resolve()),
+                desktop = subprocess.Popen([binary, "serve", "--scale", "1", "--core", str(args.core.resolve()),
                                             "--", f":{core_display}", "-screen", "0", "1280x800x24",
                                             "-crtcs", "1@1280x800", "-nolisten", "tcp", "-auth", str(auth)], env=env)
                 try:
@@ -97,7 +97,7 @@ with tempfile.TemporaryDirectory(prefix="wayx-native-") as temp:
                         desktop.wait()
                         raise
                 client = fixture("native-rootless")
-                rootless = subprocess.Popen([binary, "serve", "--rootless", "--core", str(args.core.resolve()),
+                rootless = subprocess.Popen([binary, "serve", "--scale", "1", "--rootless", "--core", str(args.core.resolve()),
                                              "--", f":{core_display}",
                                              "-nolisten", "tcp", "-auth", str(auth)], env=env)
                 try:
@@ -137,7 +137,7 @@ with tempfile.TemporaryDirectory(prefix="wayx-native-") as temp:
                     idle_env = env.copy()
                     idle_env.update(RUST_LOG="wayx=debug", NO_COLOR="1")
                     with idle_log.open("w") as output:
-                        command = [binary, "serve", "--core", str(args.core.resolve())]
+                        command = [binary, "serve", "--scale", "1", "--core", str(args.core.resolve())]
                         if rootless_mode:
                             command.append("--rootless")
                         command += ["--", f":{core_display}"]
@@ -197,7 +197,7 @@ with tempfile.TemporaryDirectory(prefix="wayx-native-") as temp:
                                 raise RuntimeError(f"Idle server failed: {idle_log.read_text()}")
                     print(f"Idle rootless={rootless_mode}: zero extra presents; damage woke rendering.")
             if args.core:
-                conflict = subprocess.run([binary, "serve", "--rootless", "--core", str(args.core.resolve()),
+                conflict = subprocess.run([binary, "serve", "--scale", "1", "--rootless", "--core", str(args.core.resolve()),
                                            "--", f":{core_display}", "-screen", "0", "64x64x24", "-crtcs", "1@64x64", "-nolisten", "tcp", "-ac"],
                                           env=env, capture_output=True, text=True, timeout=5)
                 if conflict.returncode == 0 or "conflict with the host desktop" not in conflict.stdout + conflict.stderr:
@@ -206,7 +206,7 @@ with tempfile.TemporaryDirectory(prefix="wayx-native-") as temp:
                 subprocess.run([sys.executable, "scripts/test-idle-cpu.py", "--binary", binary,
                                 "--core", str(args.core.resolve()), "--display", str(core_display), "--gpu-cycles"],
                                env=env, check=True, timeout=180)
-            failed = subprocess.run([binary, "serve", "--rootless", "--core", str(Path(temp) / "missing-core")], env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=5)
+            failed = subprocess.run([binary, "serve", "--scale", "1", "--rootless", "--core", str(Path(temp) / "missing-core")], env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=5)
             if failed.returncode == 0:
                 raise RuntimeError("Missing core did not fail")
             print("Native window rendering and requested XLibre lifecycle checks passed.")

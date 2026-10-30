@@ -81,6 +81,7 @@ if sys.platform == "linux":
     for name in ("native-resize", "native-rootless", "native-glx"):
         compile_c(name, "tests/"+name+".c", pkg("x11"))
     compile_c("glx-client", "tests/glx-client.c", pkg("gl", "x11"))
+    compile_c("scale-client", "tests/scale-client.c", [*pkg("x11"), "-lm", "-l:libXtst.so.6"])
     includedir = subprocess.check_output(["pkg-config", "--variable=includedir", "OGRE"], text=True).strip()
     compile_c("ogre-client", "tests/ogre-client.cpp", ["-isystem", includedir+"/OGRE", *pkg("OGRE", option="--libs", libs=False)], cxx=True)
 
@@ -92,7 +93,7 @@ if sys.platform == "linux":
     plugin = plugin_dir/"RenderSystem_GL.so"
     shutil.copy2(plugin, libdir/plugin.name)
     executables["ogre-plugin"] = "lib/"+plugin.name
-    queue = [out/value for name,value in executables.items() if name in {"c-bridge", "xim-client", "glx-client", "ogre-client", "ogre-plugin", "native-resize", "native-rootless", "native-glx", "idle-client"}]
+    queue = [out/value for name,value in executables.items() if name in {"c-bridge", "xim-client", "glx-client", "ogre-client", "ogre-plugin", "native-resize", "native-rootless", "native-glx", "idle-client", "scale-client"}]
     staged = {}
     while queue:
         binary = queue.pop()
@@ -110,7 +111,7 @@ shutil.copytree(args.runtime/"licenses", out/"licenses")
 shutil.copytree("scripts", out/"scripts", ignore=shutil.ignore_patterns("__pycache__"))
 # Test jobs need no checkout or build source, and cannot fall back to compilation.
 # Only test drivers, the fixture resolver and manifest verifier are shipped.
-keep = {"test-package.py", "test-package-support.py", "test-native.py", "test-idle-cpu.py", "test-macos-lifecycle.py", "test_fixtures.py", "create-xauthority.py", "package_support.py", "relocate-runtime.py", "prepare-release.py"}
+keep = {"test-package.py", "test-package-support.py", "test-native.py", "test-idle-cpu.py", "test-macos-lifecycle.py", "test-scale.py", "test_fixtures.py", "create-xauthority.py", "package_support.py", "relocate-runtime.py", "prepare-release.py"}
 for path in (out/"scripts").iterdir():
     if path.name not in keep:
         if path.is_dir(): shutil.rmtree(path)

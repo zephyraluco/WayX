@@ -103,6 +103,7 @@ if sys.platform == "darwin":
                               "--core", core, "--client", executable("idle-client")])
 if sys.platform == "linux":
     run("gpu-readback", [client, "gpu-smoke"])
+    run("scaling", [sys.executable, "scripts/test-scale.py", "--binary", client, "--core", core], timeout=300)
     run("native", [sys.executable, "scripts/test-native.py", "--binary", client, "--core", core,
                    "--glx-client", executable("glx-client"), "--gpu-cycles", "--test-kit", kit], timeout=300)
     run("native-geometry", ["xvfb-run", "-a", sys.executable, "scripts/test-idle-cpu.py", "--binary", client,
